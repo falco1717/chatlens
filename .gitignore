@@ -1,0 +1,11 @@
+node_modules/
+# runtime state
+data/
+workspace/
+*.log
+# local tooling
+.claude/
+# your own deployment (hosts, domains, notes) stays private
+deploy/*/
+!deploy/example/
+.env

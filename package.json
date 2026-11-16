@@ -1,0 +1,27 @@
+{
+  "name": "chatlens",
+  "version": "1.0.0",
+  "description": "Web UI for every Claude Code / Claude desktop chat on your PC, with Claude built in to search, read and continue them.",
+  "scripts": {
+    "start": "node server.mjs",
+    "sync": "node sync/chatlens-sync.mjs"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent-sdk",
+    "chat"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.325",
+    "marked": "^18.2.0",
+    "zod": "^4.6.7"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,20 @@
+# Example Traefik (file provider) route for ChatLens.
+# Replace the host, the auth middleware and the cert resolver with yours.
+http:
+  routers:
+    chatlens:
+      entryPoints: ["websecure"]
+      rule: "Host(`chatlens.example.com`)"
+      middlewares:
+        - my-auth@docker        # REQUIRED: an authenticating middleware (Authelia, forward-auth, ...)
+      service: chatlens
+      tls:
+        certResolver: letsencrypt
+  services:
+    chatlens:
+      loadBalancer:
+        servers:
+          - url: "http://chatlens:4477"
+        # Claude's replies stream as server-sent events: don't buffer or gzip them.
+        responseForwarding:
+          flushInterval: "100ms"

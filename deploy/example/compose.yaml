@@ -1,0 +1,43 @@
+# ChatLens on a Docker host, behind a reverse proxy that handles TLS and login.
+#
+# Layout on the server (default /opt/chatlens):
+#   src/          this repository (the build context)
+#   sync/         transcript mirror, written by sync/receiver.py over SSH from the
+#                 PC's sync agent; mounted READ-ONLY into the container
+#   bridge/       "continue this chat on the PC" jobs and their output
+#   data/         ChatLens state: conversations, Claude's home, scratch workspace
+#   .env          CLAUDE_CODE_OAUTH_TOKEN=...   (deploy/set-claude-token.ps1 writes it)
+#   receiver.py   copy of sync/receiver.py (started by sshd on demand)
+#
+# Deploy:  cd /opt/chatlens && docker compose up -d --build
+#
+# IMPORTANT: put an authenticating proxy in front (Authelia, oauth2-proxy,
+# Cloudflare Access, ...). The app shows every transcript, secrets included,
+# and "Full tools" gives a shell. Never publish port 4477 directly.
+services:
+  chatlens:
+    build:
+      context: /opt/chatlens/src
+    image: chatlens:latest
+    container_name: chatlens
+    restart: unless-stopped
+    env_file: /opt/chatlens/.env
+    environment:
+      CHATLENS_ALLOWED_HOSTS: chatlens.example.com      # the public host name(s), comma separated
+      # Optional, used in messages and the assistant's instructions:
+      # CHATLENS_SERVER_NAME: my-server
+      # CHATLENS_PC_NAME: "the user's Windows PC (MYPC)"
+      # CHATLENS_CONTEXT: "Anything else the assistant should know about your setup."
+    volumes:
+      - /opt/chatlens/sync:/data/sync:ro
+      - /opt/chatlens/data:/data/app
+      - /opt/chatlens/bridge:/data/bridge
+    networks:
+      - proxy
+    mem_limit: 2g
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  proxy:
+    external: true   # the network your reverse proxy uses to reach containers

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>ChatLens</title>
+  <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1b1a18" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ChatLens">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/marked.js"></script>
+</head>
+<body data-view="list">
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="4" cy="6" r="1.3" fill="currentColor"/><circle cx="4" cy="12" r="1.3" fill="currentColor"/><circle cx="4" cy="18" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 12h5M10 16h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3c.6 4.6 2.9 6.9 7.5 7.5-4.6.6-6.9 2.9-7.5 7.5-.6-4.6-2.9-6.9-7.5-7.5C9.1 9.9 11.4 7.6 12 3z" fill="currentColor"/><path d="M19 15.5c.3 1.9 1.1 2.7 3 3-1.9.3-2.7 1.1-3 3-.3-1.9-1.1-2.7-3-3 1.9-.3 2.7-1.1 3-3z" fill="currentColor" opacity=".6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-fork" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="19" r="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <div id="app">
+    <!-- Every chat on the PC -->
+    <aside id="sidebar" aria-label="Chats">
+      <div class="brand">
+        <img src="/icon.svg" alt="" width="26" height="26">
+        <div class="brandText"><span class="name">ChatLens</span><span id="indexStatus" class="status"></span></div>
+        <button id="btnFilters" class="icon onlyPhone" aria-label="Filters" aria-expanded="false"><svg><use href="#i-filter"/></svg></button>
+      </div>
+      <div class="search">
+        <label class="searchBox">
+          <svg><use href="#i-search"/></svg>
+          <input id="q" type="search" enterkeyhint="search" placeholder="Filter titles · Enter searches messages" autocomplete="off">
+        </label>
+        <div id="filters" class="filters">
+          <select id="project" aria-label="Project"><option value="">All projects</option></select>
+          <div class="checks">
+            <label class="pill"><input type="checkbox" id="regex"> regex</label>
+            <label class="pill"><input type="checkbox" id="showArchived" checked> archived</label>
+            <label class="pill"><input type="checkbox" id="showForks"> forks</label>
+          </div>
+        </div>
+      </div>
+      <div id="searchBanner" class="banner hidden"></div>
+      <div id="chatList" class="list"></div>
+    </aside>
+
+    <!-- Transcript viewer -->
+    <main id="viewer">
+      <div id="empty" class="empty">
+        <img src="/icon.svg" alt="" width="56" height="56">
+        <h1>Every chat, one place</h1>
+        <p>Pick a chat to read it, or ask Claude. It can search and read all of them.</p>
+        <div id="stats" class="muted"></div>
+        <button class="primary big openClaude"><svg><use href="#i-spark"/></svg> Ask Claude</button>
+      </div>
+      <header id="chatHeader" class="hidden">
+        <div class="titleRow">
+          <button id="btnBack" class="icon onlyPhone" aria-label="Back to chats"><svg><use href="#i-back"/></svg></button>
+          <div class="titleWrap">
+            <h2 id="chatTitle"></h2>
+            <div id="chatMeta" class="meta"></div>
+          </div>
+          <div class="actions">
+            <button id="btnFork" title="Fork this chat and continue it with its full original context"><svg><use href="#i-fork"/></svg><span>Continue chat</span></button>
+            <button class="icon openClaude notDesktop" aria-label="Open Claude"><svg><use href="#i-spark"/></svg></button>
+            <button id="btnTools" class="icon onlyPhone" aria-label="View options" aria-expanded="false"><svg><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+        <div id="toolbar" class="toolbar">
+          <label class="searchBox small">
+            <svg><use href="#i-search"/></svg>
+            <input id="findInChat" type="search" enterkeyhint="search" placeholder="Find in this chat">
+            <span id="findCount" class="muted"></span>
+          </label>
+          <select id="subagent" aria-label="Subagent"></select>
+          <label class="pill"><input type="checkbox" id="showTools" checked> tool calls</label>
+          <label class="pill"><input type="checkbox" id="showMeta"> system</label>
+        </div>
+      </header>
+      <div id="transcript"></div>
+      <button id="jumpEnd" class="fab hidden" aria-label="Jump to latest"><svg><use href="#i-down"/></svg></button>
+      <form id="replyBar" class="composer hidden" autocomplete="off">
+        <div class="replyHead">
+          <div class="replyModes" role="group" aria-label="What the reply does">
+            <button type="button" data-mode="continue" class="on">Continue chat</button>
+            <button type="button" data-mode="ask">Ask about it</button>
+          </div>
+        </div>
+        <div id="replyNotice" class="notice hidden"></div>
+        <div class="composerBox">
+          <textarea id="reply" rows="1" enterkeyhint="send" placeholder="Ask Claude about this chat…"></textarea>
+          <button type="submit" class="send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+        </div>
+      </form>
+    </main>
+
+    <!-- Claude -->
+    <div id="scrim" class="scrim"></div>
+    <section id="claude" aria-label="Claude">
+      <div class="panelHead">
+        <button id="btnCloseClaude" class="icon notDesktop" aria-label="Close Claude"><svg><use href="#i-close"/></svg></button>
+        <select id="convSelect" aria-label="Conversation"></select>
+        <button id="btnNew" class="icon" aria-label="New conversation" title="New conversation"><svg><use href="#i-plus"/></svg></button>
+        <button id="btnDelConv" class="icon" aria-label="Delete conversation" title="Delete conversation"><svg><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="settings">
+        <select id="model" aria-label="Model"></select>
+        <select id="effort" aria-label="Effort">
+          <option value="low">Low effort</option>
+          <option value="medium">Medium</option>
+          <option value="high" selected>High</option>
+          <option value="xhigh">X-high</option>
+          <option value="max">Max</option>
+        </select>
+        <label class="pill fullTools" title="Shell, file edits, web and subagents, run without asking. Off = read-only."><input type="checkbox" id="fullTools"> Full tools</label>
+      </div>
+      <div id="focusChip" class="chip hidden"></div>
+      <div id="messages"></div>
+      <form id="composer" class="composer" autocomplete="off">
+        <div id="convStatus" class="convStatus"></div>
+        <div class="composerBox">
+          <textarea id="prompt" rows="1" enterkeyhint="send" placeholder="Ask the assistant about any chat…"></textarea>
+          <button type="button" id="btnStop" class="send stop hidden" aria-label="Stop"><svg><use href="#i-stop"/></svg></button>
+          <button type="submit" id="btnSend" class="send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Phone navigation -->
+    <nav id="tabbar" aria-label="Sections">
+      <button data-go="list"><svg><use href="#i-list"/></svg><span>Chats</span></button>
+      <button data-go="chat" id="tabChat" disabled><svg><use href="#i-doc"/></svg><span>Reading</span></button>
+      <button data-go="claude"><svg><use href="#i-spark"/></svg><span>Assistant</span><i class="dot hidden" id="claudeDot"></i></button>
+    </nav>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
