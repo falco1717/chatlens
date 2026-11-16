@@ -8,6 +8,7 @@ A web UI for every Claude Code / Claude desktop chat on your PC, with Claude bui
   - If the chat is **open in the Claude desktop app**, your message is relayed into that live window, and the desktop's Claude answers there.
   - Otherwise, ChatLens resumes the session on the PC (`claude -p --resume`).
 - **Live view.** Sessions running on the PC right now are listed at the top with busy/idle status, and an open chat follows new messages as they happen.
+- **Connect your Claude account in the app.** Open Settings (the gear) → Claude account and paste a token from `claude setup-token`. ChatLens tests it and keeps it on the server, and never shows it again. No restart is needed.
 - **Mobile first.** Bottom tabs on phones, a slide-over panel on tablets, and an installable web app. Streams survive locked screens and flaky networks: turns run server-side and the page reconnects and replays what it missed.
 
 ## How it fits together
@@ -45,7 +46,7 @@ It listens on 127.0.0.1 only and uses your existing Claude Code login.
 ## Host it
 
 1. **Server:** copy the repo to `/opt/chatlens/src`, copy `sync/receiver.py` to `/opt/chatlens/receiver.py`, create `/opt/chatlens/{sync,bridge,data}`, and adapt `deploy/example/compose.yaml` and a proxy route (`deploy/example/traefik-chatlens.yml` is one example). Then `docker compose up -d --build`.
-2. **Claude login for the container:** on the PC run `powershell -File deploy/set-claude-token.ps1 -Server you@your-server`. It runs `claude setup-token`, reads the token at a hidden prompt, and writes it to the server's `.env`.
+2. **Claude login for the container:** open ChatLens → Settings → Claude account, and paste the token that `claude setup-token` prints on any machine with Claude Code. Alternatively, `deploy/set-claude-token.ps1 -Server you@your-server` writes it to the server's `.env`.
 3. **Sync agent on the PC:** create `%LOCALAPPDATA%\ChatLens\config.json` containing `{"host": "you@your-server"}`, test with `node sync/chatlens-sync.mjs --once`, then start it at logon (a Startup shortcut to `wscript.exe sync\start-sync-hidden.vbs` runs it hidden). Its log is at `%LOCALAPPDATA%\ChatLens\sync.log`.
 
 ## Security
@@ -64,7 +65,7 @@ It listens on 127.0.0.1 only and uses your existing Claude Code login.
 |---|---|---|
 | `CHATLENS_PORT` / `CHATLENS_HOST` | server | Listen port (4477) and address (127.0.0.1 locally, 0.0.0.0 in the image) |
 | `CHATLENS_ALLOWED_HOSTS` | server | Extra host names the app answers to (your public name) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | container | The container's Claude login (`claude setup-token`) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | container | The container's Claude login (`claude setup-token`). A token saved in Settings (`data/claude-auth.json`, mode 600) takes precedence |
 | `CHATLENS_SERVER_NAME`, `CHATLENS_PC_NAME`, `CHATLENS_CONTEXT` | server | Optional wording for messages and the assistant's instructions |
 | `CHATLENS_PROJECTS_HOME` | local | Optional: where your projects live, for the assistant's instructions |
 | `CHATLENS_SYNC_HOST` / `config.json` `host` | PC | SSH destination of the server (required for sync) |

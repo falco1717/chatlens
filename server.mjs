@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { ChatIndex } from './lib/indexer.mjs';
-import { buildChatTools, runTurn, forkChat, messageHandler, MODELS } from './lib/agent.mjs';
+import { buildChatTools, runTurn, forkChat, messageHandler, testClaudeLogin, MODELS } from './lib/agent.mjs';
 import { runOnPc, liveSessions, cleanBridge } from './lib/pcrun.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -44,6 +44,20 @@ function save() {
     fs.renameSync(tmp, CONV_FILE);
   }, 300);
 }
+// ---------- Claude login (Settings → Claude account) ----------
+// A token pasted in Settings is kept here (owner-only) and never sent back to a browser.
+const AUTH_FILE = path.join(DATA, 'claude-auth.json');
+function savedAuth() { try { return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')); } catch { return null; } }
+const savedToken = () => savedAuth()?.token || null;
+let loginCheck = null; // { ok, error, at } from the last test
+function loginSource() {
+  if (savedToken()) return 'saved';
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY) return 'env';
+  const home = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude');
+  if (fs.existsSync(path.join(home, '.credentials.json')) || !HOSTED) return 'local';
+  return 'none';
+}
+
 const forkIds = () => new Set(conversations.filter((c) => c.mode === 'fork').map((c) => c.sdkSessionId));
 
 // ---------- turns ----------
@@ -153,6 +167,29 @@ async function handle(req, res) {
     return json(res, 200, r);
   }
   if (p === '/api/projects') return json(res, 200, index.projects());
+  if (p === '/api/account') {
+    if (req.method === 'POST') {
+      const { token } = await readBody(req);
+      const t = String(token || '').replace(/\s/g, '');
+      if (!/^sk-ant-(oat|api)\d+-[A-Za-z0-9_-]{40,}$/.test(t)) return json(res, 400, { error: 'That does not look like a Claude token. Run "claude setup-token" and paste the sk-ant-oat01-… value it prints.' });
+      const r = await testClaudeLogin({ authToken: t, workspace: WORKSPACE });
+      if (!r.ok) return json(res, 400, { error: `Claude did not accept that token: ${r.error}` });
+      fs.writeFileSync(AUTH_FILE, JSON.stringify({ token: t, savedAt: new Date().toISOString() }), { mode: 0o600 });
+      loginCheck = { ok: true, at: new Date().toISOString() };
+      return json(res, 200, { ok: true });
+    }
+    if (req.method === 'DELETE') {
+      fs.rmSync(AUTH_FILE, { force: true });
+      loginCheck = null;
+      return json(res, 200, { ok: true, source: loginSource() });
+    }
+    // GET (?check=1 runs a tiny request with the current login, at most every 20 s)
+    if (url.searchParams.get('check') === '1' && (!loginCheck || Date.now() - new Date(loginCheck.at).getTime() > 20000)) {
+      const r = await testClaudeLogin({ authToken: savedToken(), workspace: WORKSPACE });
+      loginCheck = { ...r, at: new Date().toISOString() };
+    }
+    return json(res, 200, { source: loginSource(), saved_at: savedAuth()?.savedAt || null, hosted: HOSTED, check: loginCheck });
+  }
   if (p === '/api/search') {
     await index.ensureFresh();
     try {
@@ -300,7 +337,7 @@ async function ask(req, res) {
 
   const record = (event, data) => {
     if (event === 'error' && HOSTED && /authentication_failed|Not logged in|invalid.*token|OAuth/i.test(data.message || '')) {
-      data = { message: `ChatLens on ${SERVER_NAME} has no working Claude login. Create a token with "claude setup-token" and set it as CLAUDE_CODE_OAUTH_TOKEN for the container (deploy/set-claude-token.ps1 does both).` };
+      data = { message: `ChatLens on ${SERVER_NAME} has no working Claude login. Open Settings (the gear in the assistant panel) → Claude account and paste a token from "claude setup-token".`, login: true };
       if (reply.error) return;
     }
     if (event === 'delta') reply.text += data.text;
@@ -346,7 +383,7 @@ async function ask(req, res) {
       await runTurn({
         index, mcp, prompt, sessionId: c.sdkSessionId, mode: c.mode,
         focusId: c.mode === 'lens' ? (body.focus_id || null) : null,
-        cwd: c.cwd, workspace: WORKSPACE, model: body.model, effort: body.effort, fullTools, abort, emit: record,
+        cwd: c.cwd, workspace: WORKSPACE, model: body.model, effort: body.effort, fullTools, authToken: savedToken(), abort, emit: record,
       });
     }
   } catch (e) {

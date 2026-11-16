@@ -755,7 +755,7 @@ function msgHTML(m) {
   if (chips) out += `<div>${chips}</div>`;
   flushText(m.text.length);
   const foot = [m.cost_usd != null && `$${m.cost_usd.toFixed(3)}`, m.duration_ms && `${(m.duration_ms / 1000).toFixed(1)}s`].filter(Boolean).join(' · ');
-  return `<div class="msg assistant"><div class="body ${m._live ? 'typing' : ''}">${out}</div>${m.error ? `<div class="err">${esc(m.error)}</div>` : ''}${foot ? `<div class="foot">${foot}</div>` : ''}</div>`;
+  return `<div class="msg assistant"><div class="body ${m._live ? 'typing' : ''}">${out}</div>${m.error ? `<div class="err">${esc(m.error)}${/Settings|Claude login|Not logged in/i.test(m.error) ? ' <button type="button" class="linkish" data-open-settings>Open Settings</button>' : ''}</div>` : ''}${foot ? `<div class="foot">${foot}</div>` : ''}</div>`;
 }
 
 $('#messages').addEventListener('click', (e) => {
@@ -1003,3 +1003,63 @@ async function pollStatus() {
   // Pick up new chats and live status; quick while the page is in view.
   setInterval(() => { if (document.visibilityState === 'visible') loadChats().catch(() => {}); }, 6000);
 })();
+
+// ---------------- Settings: Claude account ----------------
+function openSettings() {
+  $('#settings').classList.remove('hidden');
+  $('#acctMsg').textContent = ''; $('#acctMsg').className = 'acctMsg';
+  loadAccount(true);
+}
+function closeSettings() { $('#settings').classList.add('hidden'); $('#acctToken').value = ''; }
+document.querySelectorAll('.openSettings').forEach((b) => (b.onclick = openSettings));
+$('#btnCloseSettings').onclick = closeSettings;
+$('#settings').addEventListener('click', (e) => { if (e.target.id === 'settings') closeSettings(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#settings').classList.contains('hidden')) closeSettings(); });
+
+async function loadAccount(check) {
+  const box = $('#acctStatus');
+  box.className = 'acctStatus'; box.textContent = check ? 'Checking the Claude login…' : 'Loading…';
+  try {
+    const a = await api(`/api/account${check ? '?check=1' : ''}`);
+    const where = {
+      saved: `Connected with a token saved in ChatLens${a.saved_at ? ` on ${fmtDate(a.saved_at)}` : ''}.`,
+      env: 'Using the token from the server configuration (CLAUDE_CODE_OAUTH_TOKEN).',
+      local: 'Using Claude Code\'s own login on this computer.',
+      none: 'Not connected to a Claude account yet.',
+    }[a.source] || a.source;
+    let health = '';
+    if (a.check) health = a.check.ok ? ' ✓ Working.' : ` ✗ Not working: ${a.check.error}`;
+    box.textContent = where + health;
+    box.classList.toggle('ok', !!a.check?.ok);
+    box.classList.toggle('bad', a.source === 'none' || (a.check && !a.check.ok));
+    $('#acctRemove').classList.toggle('hidden', a.source !== 'saved');
+    $('#acctSave').textContent = a.source === 'saved' ? 'Replace and test' : 'Save and test';
+  } catch (e) { box.textContent = `Could not read the account status: ${e.message}`; box.classList.add('bad'); }
+}
+
+$('#acctForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const token = $('#acctToken').value.replace(/\s/g, '');
+  const msg = $('#acctMsg');
+  if (!token) { msg.textContent = 'Paste the token first.'; msg.className = 'acctMsg bad'; return; }
+  $('#acctSave').disabled = true; msg.className = 'acctMsg'; msg.textContent = 'Testing the token with Claude…';
+  try {
+    const r = await fetch('/api/account', { method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    $('#acctToken').value = '';
+    msg.textContent = 'Saved. ChatLens now uses this Claude account.'; msg.className = 'acctMsg ok';
+    loadAccount(false);
+  } catch (err) { msg.textContent = err.message; msg.className = 'acctMsg bad'; }
+  finally { $('#acctSave').disabled = false; }
+});
+
+$('#acctRemove').onclick = async () => {
+  if (!confirm('Remove the saved Claude token from ChatLens? It falls back to the server configuration, if any.')) return;
+  await api('/api/account', { method: 'DELETE' });
+  $('#acctMsg').textContent = 'Removed.'; $('#acctMsg').className = 'acctMsg';
+  loadAccount(true);
+};
+
+// A reply that failed for lack of a login gets a shortcut to Settings.
+$('#messages').addEventListener('click', (e) => { if (e.target.closest('[data-open-settings]')) openSettings(); });

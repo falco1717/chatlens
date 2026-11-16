@@ -30,6 +30,7 @@
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-fork" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="19" r="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </svg>
 
@@ -39,6 +40,7 @@
       <div class="brand">
         <img src="/icon.svg" alt="" width="26" height="26">
         <div class="brandText"><span class="name">ChatLens</span><span id="indexStatus" class="status"></span></div>
+        <button class="icon openSettings" aria-label="Settings" title="Settings"><svg><use href="#i-gear"/></svg></button>
         <button id="btnFilters" class="icon onlyPhone" aria-label="Filters" aria-expanded="false"><svg><use href="#i-filter"/></svg></button>
       </div>
       <div class="search">
@@ -117,6 +119,7 @@
         <select id="convSelect" aria-label="Conversation"></select>
         <button id="btnNew" class="icon" aria-label="New conversation" title="New conversation"><svg><use href="#i-plus"/></svg></button>
         <button id="btnDelConv" class="icon" aria-label="Delete conversation" title="Delete conversation"><svg><use href="#i-trash"/></svg></button>
+        <button class="icon openSettings" aria-label="Settings" title="Settings"><svg><use href="#i-gear"/></svg></button>
       </div>
       <div class="settings">
         <select id="model" aria-label="Model"></select>
@@ -140,6 +143,33 @@
         </div>
       </form>
     </section>
+
+    <!-- Settings -->
+    <div id="settings" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="sheetBox">
+        <div class="sheetHead">
+          <h3 id="settingsTitle">Settings</h3>
+          <button id="btnCloseSettings" class="icon" aria-label="Close settings"><svg><use href="#i-close"/></svg></button>
+        </div>
+        <section>
+          <h4>Claude account</h4>
+          <div id="acctStatus" class="acctStatus">Checking…</div>
+          <ol class="steps">
+            <li>On any computer with Claude Code, run <code>claude setup-token</code> and sign in with your Claude account.</li>
+            <li>Copy the token it prints (it starts with <code>sk-ant-oat01-</code>) and paste it below.</li>
+          </ol>
+          <form id="acctForm" autocomplete="off">
+            <input id="acctToken" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="sk-ant-oat01-…" aria-label="Claude token">
+            <div class="acctButtons">
+              <button type="submit" id="acctSave" class="primary">Save and test</button>
+              <button type="button" id="acctRemove" class="hidden">Remove saved token</button>
+            </div>
+            <div id="acctMsg" class="acctMsg"></div>
+          </form>
+          <p class="muted small">The token is kept on the ChatLens server only and is never shown again. ChatLens's assistant uses it. Chats you continue on your PC use that PC's own Claude login.</p>
+        </section>
+      </div>
+    </div>
 
     <!-- Phone navigation -->
     <nav id="tabbar" aria-label="Sections">
