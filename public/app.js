@@ -154,13 +154,58 @@ async function openChat(id, sub, index) {
       state.chat = c;
     } catch (e) { $('#transcript').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
     renderHeader();
-    state.rendered = 0;
     $('#transcript').innerHTML = '';
-    renderMore(index != null ? index + 20 : CHUNK);
+    // Open on the latest messages; a linked message opens around that message.
+    const total = state.chat.entries.length;
+    const start = index != null ? Math.max(0, index - 40) : Math.max(0, total - CHUNK);
+    state.first = state.rendered = start;
+    renderMore(index != null ? index + 40 : total);
+    if (start > 0) addLoadEarlier();
     renderList();
   }
   if (index != null) jumpTo(index);
-  else $('#transcript').scrollTop = 0;
+  else scrollToBottom();
+}
+
+function scrollToBottom() {
+  const t = $('#transcript');
+  t.scrollTop = t.scrollHeight;
+  requestAnimationFrame(() => { t.scrollTop = t.scrollHeight; }); // after images/markdown settle
+}
+
+function buildEntry(e) {
+  const div = document.createElement('div');
+  div.className = `entry ${e.role}${e.meta ? ' meta' : ''}${e.sidechain ? ' sidechain' : ''}`;
+  div.id = 'e' + e.i;
+  if (!visible(e)) div.classList.add('hidden');
+  div.innerHTML = entryHTML(e);
+  return div;
+}
+
+function addLoadEarlier() {
+  const t = $('#transcript');
+  t.querySelector('.loadEarlier')?.remove();
+  if (!state.first) return;
+  const b = document.createElement('button');
+  b.className = 'loadMore loadEarlier';
+  b.textContent = `Load earlier messages (${state.first})`;
+  b.onclick = () => renderEarlier(state.first - CHUNK);
+  t.insertBefore(b, t.firstChild);
+}
+
+// Prepend older entries without moving what's on screen.
+function renderEarlier(from) {
+  from = Math.max(0, from);
+  if (!state.chat || from >= state.first) return;
+  const t = $('#transcript');
+  const prevH = t.scrollHeight, prevTop = t.scrollTop;
+  const frag = document.createDocumentFragment();
+  for (let k = from; k < state.first; k++) frag.appendChild(buildEntry(state.chat.entries[k]));
+  t.querySelector('.loadEarlier')?.remove();
+  t.insertBefore(frag, t.firstChild);
+  state.first = from;
+  addLoadEarlier();
+  t.scrollTop = prevTop + (t.scrollHeight - prevH);
 }
 
 function renderHeader() {
@@ -223,13 +268,14 @@ async function tail() {
       const stick = allShown && t.scrollTop + t.clientHeight > t.scrollHeight - 160;
       chat.entries.splice(r.start, Infinity, ...r.entries);
       chat.updated = r.updated;
-      if (state.rendered > r.start) {
+      const redrawFrom = Math.max(r.start, state.first || 0);
+      if (state.rendered > redrawFrom) {
         // re-draw the changed tail in place
-        for (let k = r.start; k < state.rendered; k++) document.getElementById('e' + k)?.remove();
-        state.rendered = r.start;
-        renderMore(allShown ? chat.entries.length : r.start);
+        for (let k = redrawFrom; k < state.rendered; k++) document.getElementById('e' + k)?.remove();
+        state.rendered = redrawFrom;
+        renderMore(allShown ? chat.entries.length : redrawFrom);
       } else if (state.rendered < chat.entries.length) {
-        const b = $('#transcript .loadMore'); if (b) b.textContent = `Load more (${chat.entries.length - state.rendered} remaining)`;
+        const b = $('#transcript .loadMore:not(.loadEarlier)'); if (b) b.textContent = `Load more (${chat.entries.length - state.rendered} remaining)`;
       }
       if (stick) t.scrollTop = t.scrollHeight;
     }
@@ -281,16 +327,8 @@ function renderMore(upTo) {
   const end = Math.min(cap, Math.max(upTo, state.rendered + CHUNK));
   if (end <= state.rendered) return;
   const frag = document.createDocumentFragment();
-  for (let k = state.rendered; k < end; k++) {
-    const e = entries[k];
-    const div = document.createElement('div');
-    div.className = `entry ${e.role}${e.meta ? ' meta' : ''}${e.sidechain ? ' sidechain' : ''}`;
-    div.id = 'e' + e.i;
-    if (!visible(e)) div.classList.add('hidden');
-    div.innerHTML = entryHTML(e);
-    frag.appendChild(div);
-  }
-  $('#transcript').querySelector('.loadMore')?.remove();
+  for (let k = state.rendered; k < end; k++) frag.appendChild(buildEntry(entries[k]));
+  $('#transcript').querySelector('.loadMore:not(.loadEarlier)')?.remove();
   const pend = $('#pendingTurn');
   if (pend) $('#transcript').insertBefore(frag, pend); else $('#transcript').appendChild(frag);
   state.rendered = end;
@@ -302,13 +340,16 @@ function renderMore(upTo) {
     $('#transcript').appendChild(b);
   }
 }
-// infinite scroll
+// infinite scroll, both ways
 $('#transcript').addEventListener('scroll', () => {
   const t = $('#transcript');
-  if (state.chat && state.rendered < state.chat.entries.length && t.scrollTop + t.clientHeight > t.scrollHeight - 600) renderMore(state.rendered + CHUNK);
+  if (!state.chat) return;
+  if (state.rendered < state.chat.entries.length && t.scrollTop + t.clientHeight > t.scrollHeight - 600) renderMore(state.rendered + CHUNK);
+  if (state.first > 0 && t.scrollTop < 300) renderEarlier(state.first - CHUNK);
 });
 
 function jumpTo(i) {
+  if (i < (state.first || 0)) renderEarlier(i - 20);
   if (i >= state.rendered) renderMore(i + 20);
   const el = document.getElementById('e' + i);
   if (!el) return;
@@ -335,9 +376,11 @@ $('#transcript').addEventListener('click', async (ev) => {
 
 ['#showTools', '#showMeta'].forEach((s) => $(s).addEventListener('change', () => {
   if (!state.chat) return;
-  const top = $('#transcript').scrollTop;
-  state.rendered = 0; $('#transcript').innerHTML = '';
-  renderMore(CHUNK);
+  const top = $('#transcript').scrollTop, from = state.first || 0, to = state.rendered;
+  $('#transcript').innerHTML = '';
+  state.first = state.rendered = from;
+  renderMore(to);
+  addLoadEarlier();
   $('#transcript').scrollTop = top;
 }));
 
@@ -603,11 +646,12 @@ function settlePending() {
 $('#jumpEnd').onclick = () => {
   if (!state.chat) return;
   renderMore(state.chat.entries.length);
-  const t = $('#transcript'); t.scrollTop = t.scrollHeight;
+  scrollToBottom();
+  $('#jumpEnd').classList.add('hidden');
 };
 $('#transcript').addEventListener('scroll', () => {
   const t = $('#transcript');
-  const far = state.chat && (state.rendered < state.chat.entries.length || t.scrollHeight - t.scrollTop - t.clientHeight > 1500);
+  const far = state.chat && (state.rendered < state.chat.entries.length || t.scrollHeight - t.scrollTop - t.clientHeight > 400);
   $('#jumpEnd').classList.toggle('hidden', !far);
 }, { passive: true });
 
