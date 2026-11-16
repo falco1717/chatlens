@@ -11,6 +11,7 @@ import { ChatIndex } from './lib/indexer.mjs';
 import { buildChatTools, runTurn, forkChat, messageHandler, testClaudeLogin, MODELS } from './lib/agent.mjs';
 import { runOnPc, liveSessions as localLive, cleanBridge } from './lib/pcrun.mjs';
 import { PcRegistry } from './lib/pcs.mjs';
+import { Uploads, attachmentNote, MAX_FILE, MAX_JOB } from './lib/uploads.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CHATLENS_PORT || 4477);
@@ -24,6 +25,7 @@ const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`,
 const WORKSPACE = process.env.CHATLENS_WORKSPACE || path.join(ROOT, 'workspace');
 const DATA = process.env.CHATLENS_DATA_DIR || path.join(ROOT, 'data');
 const CONV_FILE = path.join(DATA, 'conversations.json');
+const uploads = new Uploads(path.join(DATA, 'uploads'));
 fs.mkdirSync(WORKSPACE, { recursive: true });
 fs.mkdirSync(DATA, { recursive: true });
 
@@ -80,6 +82,7 @@ function pushEvent(t, event, data) {
 setInterval(() => { // forget finished turns after 15 minutes
   for (const [id, t] of turns) if (t.done && Date.now() - t.doneAt > 15 * 60e3) turns.delete(id);
   cleanBridge().catch(() => {});
+  uploads.clean().catch(() => {});
 }, 60e3).unref();
 
 function attach(req, res, t, from) {
@@ -111,6 +114,12 @@ function json(res, code, body) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
+async function readRaw(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) { size += c.length; if (size > limit) throw Object.assign(new Error('file too large'), { status: 413 }); chunks.push(c); }
+  return Buffer.concat(chunks);
+}
 async function readBody(req) {
   const chunks = [];
   let size = 0;
@@ -125,9 +134,9 @@ function viewEntry(m) {
   const e = { i: m.i, role: m.role, ts: m.ts, sidechain: m.sidechain || undefined };
   if (m.role === 'assistant') {
     e.text = m.text; e.error = m.error || undefined;
-    if (m.tools.length) e.tools = m.tools.map((t) => ({ name: t.name, input: clip(t.input, 400), more: t.input.length > 400 || undefined }));
+    if (m.tools.length) e.tools = m.tools.map((t) => ({ id: t.id, name: t.name, input: clip(t.input, 400), more: t.input.length > 400 || undefined, q: t.full || undefined }));
   } else if (m.role === 'tool') {
-    e.text = clip(m.text, 400); e.more = m.text.length > 400 || undefined; e.isError = m.isError || undefined;
+    e.text = clip(m.text, 400); e.more = m.text.length > 400 || undefined; e.isError = m.isError || undefined; e.toolUseId = m.toolUseId || undefined;
   } else if (m.role === 'user') {
     e.text = m.meta ? clip(m.text, 2000) : m.search; e.meta = m.meta || undefined; e.from = m.from || undefined;
   } else e.text = m.text;
@@ -182,6 +191,13 @@ async function handle(req, res) {
     return json(res, 200, r);
   }
   if (p === '/api/projects') return json(res, 200, index.projects());
+  if (p === '/api/uploads' && req.method === 'POST') {
+    try {
+      const data = await readRaw(req, MAX_FILE);
+      if (!data.length) return json(res, 400, { error: 'empty file' });
+      return json(res, 200, await uploads.save(url.searchParams.get('name'), req.headers['content-type'], data));
+    } catch (e) { return json(res, e.status || 400, { error: e.status === 413 ? `Files can be up to ${MAX_FILE / 1048576} MB.` : e.message }); }
+  }
   if (p === '/api/pcs' || p.startsWith('/api/pcs/')) {
     if (!pcs) return json(res, 200, { hosted: false, pcs: [] });
     if (p === '/api/pcs/pair' && req.method === 'POST') {
@@ -338,7 +354,8 @@ async function handle(req, res) {
 
 async function ask(req, res) {
   const body = await readBody(req);
-  const prompt = String(body.prompt || '').trim();
+  const files = await uploads.resolve(body.attachments);
+  const prompt = String(body.prompt || '').trim() || (files.length ? 'Please look at the attached file' + (files.length > 1 ? 's.' : '.') : '');
   if (!prompt) return json(res, 400, { error: 'empty prompt' });
   const now = new Date().toISOString();
   let c = body.conversation_id && conversations.find((x) => x.id === body.conversation_id);
@@ -359,7 +376,16 @@ async function ask(req, res) {
   // The turn runs on its own; this request is just the first viewer.
   attach(req, res, t, 0);
   const fullTools = body.full_tools === true;
-  c.messages.push({ role: 'user', text: prompt, ts: now, focusId: body.focus_id || undefined, fullTools: fullTools || undefined });
+  c.messages.push({ role: 'user', text: prompt, ts: now, focusId: body.focus_id || undefined, fullTools: fullTools || undefined,
+    attachments: files.length ? files.map(({ id, name, type, size }) => ({ id, name, type, size })) : undefined });
+  // Attachments for the PC travel inside the job (hosted) or are already on this disk (local).
+  let pcFiles;
+  if (c.mode === 'pc' && files.length) {
+    if (HOSTED) {
+      if (files.reduce((n, f) => n + f.size, 0) > MAX_JOB) { pushEvent(t, 'error', { message: `Attachments for a PC can total up to ${MAX_JOB / 1048576} MB.` }); pushEvent(t, 'end', {}); return; }
+      pcFiles = { attachments: await Promise.all(files.map(async (f) => ({ name: f.name, type: f.type, size: f.size, data: (await fsp.readFile(f.file)).toString('base64') }))) };
+    } else pcFiles = { attachmentPaths: files.map((f) => ({ path: f.file, name: f.name, type: f.type, size: f.size })) };
+  }
   const reply = { role: 'assistant', text: '', tools: [], ts: now };
   c.messages.push(reply);
   c.updated = now;
@@ -394,7 +420,7 @@ async function ask(req, res) {
       }, c.sessionId);
       let relay = null;
       const { code, stderr, relayed } = await runOnPc(
-        { id: crypto.randomUUID(), sessionId: c.sessionId, cwd: c.cwd, pcId: c.pc || index.get(c.sessionId)?.pc || 'default', asMe: body.as_me === true, prompt, model: body.model, effort: body.effort, fullTools },
+        { id: crypto.randomUUID(), sessionId: c.sessionId, cwd: c.cwd, pcId: c.pc || index.get(c.sessionId)?.pc || 'default', asMe: body.as_me === true, answering: body.answering === true, ...pcFiles, prompt, model: body.model, effort: body.effort, fullTools },
         { onLine: (o) => { if (o.type === 'chatlens_relay') { relay = o; record('relay', o); } else handle(o); }, onStatus: (text) => record('status', { text }), signal: abort.signal },
       );
       if (relayed) {
@@ -411,8 +437,19 @@ async function ask(req, res) {
         throw new Error(`Claude on ${pcNameOf(c.pc)} exited (code ${code})${why ? ': ' + why : ''}`);
       }
     } else {
+      let lensPrompt = prompt;
+      if (files.length) {
+        const placed = [];
+        for (const f of files) {
+          const dest = path.join(WORKSPACE, 'uploads', f.id, f.name);
+          await fsp.mkdir(path.dirname(dest), { recursive: true });
+          await fsp.copyFile(f.file, dest);
+          placed.push({ path: dest, type: f.type, size: f.size });
+        }
+        lensPrompt += attachmentNote(placed);
+      }
       await runTurn({
-        index, mcp, prompt, sessionId: c.sdkSessionId, mode: c.mode,
+        index, mcp, prompt: lensPrompt, sessionId: c.sdkSessionId, mode: c.mode,
         focusId: c.mode === 'lens' ? (body.focus_id || null) : null,
         cwd: c.cwd, workspace: WORKSPACE, model: body.model, effort: body.effort, fullTools, authToken: savedToken(), abort, emit: record,
       });

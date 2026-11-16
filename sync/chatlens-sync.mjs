@@ -196,15 +196,49 @@ async function liveSessions() {
 
 // ---- jobs: continue a chat in its own session, on this PC ----
 const jobsRunning = new Map(); // job id -> child process
-function cliArgs({ sessionId, model, effort, fullTools }) {
+
+// Files attached in ChatLens: the note that tells Claude where they are.
+const kb = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+function attachmentNote(files) {
+  if (!files.length) return '';
+  return '\n\n[Attached files — open them with the Read tool]\n' + files.map((f) => `- ${f.path} (${f.type || 'file'}, ${kb(f.size)})`).join('\n');
+}
+function cliArgs({ sessionId, model, effort, fullTools }, extraDirs = []) {
   const a = ['-p', '--resume', sessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (model) a.push('--model', model);
   if (effort) a.push('--effort', effort);
   if (fullTools) a.push('--dangerously-skip-permissions');
   else a.push('--permission-mode', 'dontAsk', '--allowedTools', 'Read Glob Grep WebSearch WebFetch');
+  for (const d of extraDirs) a.push('--add-dir', d); // so Claude may read attached files
   return a;
 }
 // The image name of a running process (Windows), or null.
+
+// Is this chat stopped on an unanswered AskUserQuestion? (Then answering it may
+// take the chat over even though its process isn't idle: it's waiting for you.)
+async function pendingQuestion(sessionId, projectsDir) {
+  let file = null;
+  for (const d of await fsp.readdir(projectsDir).catch(() => [])) {
+    const f = path.join(projectsDir, d, sessionId + '.jsonl');
+    if (fs.existsSync(f)) { file = f; break; }
+  }
+  if (!file) return false;
+  const st = await fsp.stat(file);
+  const len = Math.min(st.size, 2 * 1024 * 1024);
+  const fh = await fsp.open(file, 'r');
+  const buf = Buffer.alloc(len);
+  try { await fh.read(buf, 0, len, st.size - len); } finally { await fh.close(); }
+  let ask = null; const answered = new Set();
+  for (const line of buf.toString('utf8').split('\n')) {
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    for (const b of (Array.isArray(o.message?.content) ? o.message.content : [])) {
+      if (o.type === 'assistant' && b.type === 'tool_use' && b.name === 'AskUserQuestion') ask = b.id;
+      if (o.type === 'user' && b.type === 'tool_result') answered.add(b.tool_use_id);
+    }
+  }
+  return !!ask && !answered.has(ask);
+}
+
 function processName(pid) {
   try {
     const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
@@ -216,15 +250,16 @@ function processName(pid) {
 // A chat open but idle in the desktop app has a Claude process waiting in the
 // background. Stop that one process so the chat has a single writer; the desktop
 // app reloads the chat from its transcript when you click back into it.
-async function takeOver(sessionId) {
+async function takeOver(sessionId, { answering = false } = {}) {
   const entries = [];
   for (const n of await fsp.readdir(CFG.sessions).catch(() => [])) {
     if (!n.endsWith('.json')) continue;
     try { const j = JSON.parse(await fsp.readFile(path.join(CFG.sessions, n), 'utf8')); if (j.sessionId === sessionId && pidAlive(j.pid)) entries.push(j); } catch { /* */ }
   }
   for (const j of entries) {
-    if (j.status !== 'idle') return `Claude is working in that chat on this PC right now (${j.status || 'busy'}). Reply again once it finishes.`;
-    if (Date.now() - (j.statusUpdatedAt || 0) < 5000) return 'That chat was just used on this PC. Try again in a few seconds.';
+    const waitingForYou = answering && await pendingQuestion(sessionId, CFG.projects);
+    if (j.status !== 'idle' && !waitingForYou) return `Claude is working in that chat on this PC right now (${j.status || 'busy'}). Reply again once it finishes.`;
+    if (!waitingForYou && Date.now() - (j.statusUpdatedAt || 0) < 5000) return 'That chat was just used on this PC. Try again in a few seconds.';
     const name = processName(j.pid);
     if (!name || !name.startsWith('claude')) return `Could not confirm the process holding that chat (pid ${j.pid} is ${name || 'unknown'}), so it was left alone.`;
     log('taking over session', sessionId, 'from idle pid', j.pid, `(${j.entrypoint || '?'})`);
@@ -239,6 +274,21 @@ async function runJob(ch, job) {
   const send = (obj) => ch.request({ op: 'event', job: job.id }, Buffer.from(JSON.stringify(obj) + '\n')).catch(() => {});
   const fail = (error) => { log('job', job.id, 'refused:', error); return send({ type: 'chatlens_exit', code: -1, error }); };
   // Open in the desktop app: relay the message into that live window instead of running it here.
+  // Attached files: save them under this agent's folder and point Claude at them.
+  let extraDirs = [];
+  if (job.attachments?.length) {
+    const dir = path.join(STATE_DIR, 'uploads', job.id);
+    fs.mkdirSync(dir, { recursive: true });
+    const saved = job.attachments.map((f) => {
+      const name = path.basename(String(f.name || 'file')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'file';
+      const full = path.join(dir, name);
+      fs.writeFileSync(full, Buffer.from(f.data || '', 'base64'));
+      return { path: full, type: f.type, size: f.size };
+    });
+    job = { ...job, prompt: job.prompt + attachmentNote(saved) };
+    extraDirs = [dir];
+    log('job', job.id, 'saved', saved.length, 'attached file(s) in', dir);
+  }
   const live = await liveSessions();
   const desk = live.find((s) => s.sessionId === job.sessionId && s.entrypoint === 'claude-desktop');
   if (desk && !job.asMe) {
@@ -250,10 +300,10 @@ async function runJob(ch, job) {
   }
   if (!job.cwd || !fs.existsSync(job.cwd)) return fail(`The chat's folder no longer exists on this PC: ${job.cwd}`);
   // One writer per transcript: take the chat over from the desktop app if it's idle there, never if busy.
-  const blocked = await takeOver(job.sessionId);
+  const blocked = await takeOver(job.sessionId, { answering: !!job.answering });
   if (blocked) return fail(blocked);
   log('job', job.id, 'continuing session', job.sessionId, 'in', job.cwd);
-  const proc = spawn(fs.existsSync(CFG.claude) ? CFG.claude : 'claude', cliArgs(job), { cwd: job.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn(fs.existsSync(CFG.claude) ? CFG.claude : 'claude', cliArgs(job, extraDirs), { cwd: job.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   jobsRunning.set(job.id, proc);
   proc.stdin.end(job.prompt);
   // Forward stdout in small batches of whole lines.
@@ -410,6 +460,11 @@ async function runSession() {
 }
 
 async function main() {
+  // attached files older than a week
+  for (const d of await fsp.readdir(path.join(STATE_DIR, 'uploads')).catch(() => [])) {
+    const full = path.join(STATE_DIR, 'uploads', d);
+    try { if (Date.now() - fs.statSync(full).mtimeMs > 7 * 24 * 3600e3) fs.rmSync(full, { recursive: true, force: true }); } catch { /* */ }
+  }
   if (!CFG.host && !(CFG.server && CFG.token)) { log('No server configured: pair this PC from ChatLens (Settings > PCs), or set "host" in', path.join(STATE_DIR, 'config.json')); process.exitCode = 2; return; }
   if (!takeLock()) { log('another sync agent is running; exiting'); return; }
   let backoff = 5000;

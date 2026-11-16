@@ -279,6 +279,7 @@ async function tail() {
         const b = $('#transcript .loadMore:not(.loadEarlier)'); if (b) b.textContent = `Load more (${chat.entries.length - state.rendered} remaining)`;
       }
       if (stick) t.scrollTop = t.scrollHeight;
+      refreshDecisionCards();
     }
     settlePending();
   } catch (e) {
@@ -294,7 +295,7 @@ $('#subagent').addEventListener('change', (e) => { location.hash = `#/chat/${sta
 function visible(e) {
   if (e.role === 'user' && e.meta && !$('#showMeta').checked) return false;
   if (e.role === 'tool' && !$('#showTools').checked) return false;
-  if (e.role === 'assistant' && !e.text && !$('#showTools').checked) return false;
+  if (e.role === 'assistant' && !e.text && !$('#showTools').checked && !(e.tools || []).some((t) => t.q)) return false;
   return true;
 }
 
@@ -306,8 +307,15 @@ function entryHTML(e) {
     return `<details class="tool ${e.isError ? 'err' : ''}"><summary>↳ result${e.isError ? ' (error)' : ''}: ${esc((e.text || '').slice(0, 140))}</summary><pre>${esc(e.text)}</pre>${e.more ? `<button class="more" data-full="${e.i}">Load full output</button>` : ''}</details>`;
   }
   if (e.role === 'assistant') {
-    const tools = $('#showTools').checked ? (e.tools || []).map((t) => `<details class="tool"><summary>${esc(t.name)} ${esc(inputLabel(t.input))}</summary><pre>${esc(prettyJSON(t.input))}</pre>${t.more ? `<button class="more" data-full="${e.i}">Load full input</button>` : ''}</details>`).join('') : '';
-    return head + `<div class="body">${e.text ? md(e.text) : ''}${tools}${e.error ? '<div class="err">API error</div>' : ''}</div>`;
+    const cards = (e.tools || []).map((t) => decisionHTML(e, t)).filter(Boolean).join('');
+    const tools = $('#showTools').checked ? (e.tools || []).filter((t) => !t.q).map((t) => `<details class="tool"><summary>${esc(t.name)} ${esc(inputLabel(t.input))}</summary><pre>${esc(prettyJSON(t.input))}</pre>${t.more ? `<button class="more" data-full="${e.i}">Load full input</button>` : ''}</details>`).join('') : '';
+    return head + `<div class="body">${e.text ? md(e.text) : ''}${tools}${cards}${e.error ? '<div class="err">API error</div>' : ''}</div>`;
+  }
+  if (e.role === 'user' && !e.meta && (e.text || '').includes('\n\n[Attached files — open them with the Read tool]\n')) {
+    // Attachments sent from ChatLens: show them as chips, not as file paths.
+    const [main, list] = e.text.split('\n\n[Attached files — open them with the Read tool]\n');
+    const names = list.split('\n').map((l) => /^- (.+?) \(/.exec(l)?.[1]).filter(Boolean).map((p) => ({ name: p.split(/[\\/]/).pop() }));
+    return head + `<div class="body">${esc(main)}</div>${filesLine(names)}`;
   }
   if (e.role === 'summary') return head + `<details class="tool"><summary>Context was compacted here — show the summary Claude carried forward (${Math.round(e.text.length / 1000)}k chars)</summary><div class="body" style="padding:6px 12px">${md(e.text)}</div></details>`;
   return head + `<div class="body">${esc(e.text)}</div>`;
@@ -523,13 +531,16 @@ $('#replyBar').addEventListener('submit', async (e) => {
     return replyNotice('A reply from ChatLens is still running in another chat. Wait for it to finish first.');
   }
   const text = $('#reply').value.trim();
-  if (!text || !state.chat) return;
+  if (!state.chat) return;
+  if (uploading('reply')) return replyNotice('Wait for the attachments to finish uploading.');
+  if (!text && !readyFiles('reply').length) return;
   const id = state.chat.session_id;
   if (state.replyMode === 'continue') return continueInline(id, text);
   // "Ask about it": a separate assistant conversation in the side panel.
   if (state.streaming) { openClaude(); return; }
   if (!state.conv || state.conv.mode !== 'lens' || (state.conv.focusId || null) !== id) newConversation();
   setFocus(id);
+  attach.prompt.push(...attach.reply.splice(0)); renderFiles('reply'); renderFiles('prompt');
   $('#reply').value = ''; autoGrow($('#reply')); $('#reply').blur();
   $('#prompt').value = text;
   openClaude();
@@ -539,7 +550,7 @@ $('#replyBar').addEventListener('submit', async (e) => {
 // ---- continuing a chat right where you're reading it ----
 // The new turn streams in at the bottom of the transcript; once the PC's copy
 // of the chat syncs back, the real entries take its place.
-async function continueInline(sessionId, text) {
+async function continueInline(sessionId, text, opts = {}) {
   let conv;
   try {
     const r = await fetch('/api/continue', { method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }) });
@@ -549,19 +560,20 @@ async function continueInline(sessionId, text) {
     conv = j;
   } catch (err) { replyNotice(esc(err.message)); return; }
   $('#reply').value = ''; autoGrow($('#reply')); if (coarse) $('#reply').blur();
-  const asMe = !$('#asMeWrap').classList.contains('hidden') && $('#asMe').checked;
+  const asMe = opts.asMe || (!$('#asMeWrap').classList.contains('hidden') && $('#asMe').checked);
+  const files = opts.noFiles ? [] : takeFiles('reply');
   $('#asMe').checked = false; // one message at a time
   const chat = state.chat;
   renderMore(chat.entries.length); // show everything up to now
   const reply = { role: 'assistant', text: '', tools: [], _live: true };
-  state.pending = { sessionId, conv, text, reply, asMe, startTotal: chat.entries.length, status: `Sending to ${PC()}…`, done: false };
+  state.pending = { sessionId, conv, text, reply, asMe, files, startTotal: chat.entries.length, status: `Sending to ${PC()}…`, done: false };
   drawPending(true);
   setReplyBusy(true);
   let first;
   try {
     first = await fetch('/api/ask', {
       method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text, conversation_id: conv.id, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked, as_me: asMe }),
+      body: JSON.stringify({ prompt: text, conversation_id: conv.id, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked, as_me: asMe, answering: !!opts.answering, attachments: files.map((f) => f.id) }),
     });
     if (!first.ok) throw new Error((await first.json().catch(() => ({}))).error || first.statusText);
   } catch (err) {
@@ -605,7 +617,7 @@ function drawPending(scroll) {
     t.appendChild(el); // always last
     const r = p.reply;
     el.innerHTML = `
-      <div class="entry user"><div class="who"><span>You · from ChatLens</span></div><div class="body">${esc(p.text)}</div></div>
+      <div class="entry user"><div class="who"><span>You · from ChatLens</span></div><div class="body">${esc(p.text)}</div>${filesLine(p.files)}</div>
       <div class="entry assistant pending"><div class="who"><span>Claude · ${p.asMe ? 'on ' + esc(PC()) + ', as you' : (p.reply.relay || state.byId.get(p.sessionId)?.live?.desktop ? 'in the desktop app' : 'on ' + esc(PC()))}</span></div>
         ${msgHTML({ ...r, role: 'assistant', _live: !p.done })}
         ${p.done && !p.relayed ? '' : `<div class="pendingStatus">${esc(p.status || '')}</div>`}
@@ -790,7 +802,7 @@ function linkify(html) {
 }
 
 function msgHTML(m) {
-  if (m.role === 'user') return `<div class="msg user"><div class="body">${esc(m.text)}</div>${m.fullTools ? '<div class="mode">full tools</div>' : ''}</div>`;
+  if (m.role === 'user') return `<div class="msg user"><div class="body">${esc(m.text)}</div>${filesLine(m.attachments)}${m.fullTools ? '<div class="mode">full tools</div>' : ''}</div>`;
   // interleave tool chips at the text offset where they happened
   const tools = (m.tools || []).slice().sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   let out = '', pos = 0, chips = '';
@@ -827,13 +839,16 @@ $('#prompt').addEventListener('keydown', (e) => {
 $('#composer').addEventListener('submit', async (e) => {
   e.preventDefault();
   const prompt = $('#prompt').value.trim();
-  if (!prompt || state.streaming) return;
+  if (state.streaming) return;
+  if (uploading('prompt')) { setStatus('Wait for the attachments to finish uploading.'); return; }
+  if (!prompt && !readyFiles('prompt').length) return;
+  const files = takeFiles('prompt');
   $('#prompt').value = ''; autoGrow($('#prompt'));
   if (coarse) $('#prompt').blur();
   const conv = state.conv || { id: null, mode: 'lens', messages: [], focusId: state.focusId };
   state.conv = conv;
   const reply = { role: 'assistant', text: '', tools: [], _live: true };
-  conv.messages.push({ role: 'user', text: prompt, fullTools: $('#fullTools').checked || undefined }, reply);
+  conv.messages.push({ role: 'user', text: prompt || '(attached files)', fullTools: $('#fullTools').checked || undefined, attachments: files.map(({ id, name, type, size }) => ({ id, name, type, size })) }, reply);
   state.streaming = { convId: conv.id, reply };
   renderMessages();
   setStatus(conv.mode === 'pc' ? `Sending to ${PC()}…` : 'Thinking…');
@@ -843,7 +858,7 @@ $('#composer').addEventListener('submit', async (e) => {
   try {
     first = await fetch('/api/ask', {
       method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, conversation_id: conv.id, focus_id: conv.mode === 'lens' ? state.focusId : null, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked }),
+      body: JSON.stringify({ prompt, conversation_id: conv.id, focus_id: conv.mode === 'lens' ? state.focusId : null, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked, attachments: files.map((f) => f.id) }),
     });
     if (!first.ok) throw new Error((await first.json().catch(() => ({}))).error || first.statusText);
   } catch (err) {
@@ -1166,3 +1181,196 @@ $('#pcCopy').onclick = async () => {
   setTimeout(() => ($('#pcCopy').textContent = 'Copy'), 1500);
 };
 document.querySelectorAll('.openSettings').forEach((b) => b.addEventListener('click', () => { $('#pcPair').classList.add('hidden'); loadPcs(); }));
+
+// ---------------- Claude's questions and next-step buttons ----------------
+// AskUserQuestion and the desktop app's next-step box (wrap_up) are drawn as
+// cards. Answering one continues the chat on the PC *as you*, because these are
+// decisions (a relayed message can't approve anything).
+const APP_ACTION_TEXT = {
+  commit: 'Commit the changes.', create_pr: 'Create a pull request.', merge: 'Merge it.', verify: 'Verify it.',
+  fix_ci: 'Fix the failing CI.', address_comments: 'Address the review comments.', resolve_conflicts: 'Resolve the merge conflicts.',
+  archive: 'Archive this session.', new_session: 'Start a new session for this.',
+};
+const decided = new Set(); // tool ids answered from this page
+
+function answersFrom(text) {
+  const out = {};
+  const re = /"((?:[^"\\]|\\.)*)"="((?:[^"\\]|\\.)*)"/g;
+  let m; while ((m = re.exec(text || ''))) out[m[1]] = m[2];
+  return out;
+}
+
+function decisionHTML(e, t) {
+  const q = t.q;
+  if (!q || !state.chat) return '';
+  const later = state.chat.entries.slice(e.i + 1);
+  const userSince = later.some((x) => x.role === 'user' && !x.meta);
+  const canAct = !state.chat.subagent && !decided.has(t.id) && !(state.pending && !state.pending.done);
+  if (t.name === 'AskUserQuestion') {
+    const res = later.find((x) => x.role === 'tool' && x.toolUseId === t.id);
+    let answers = res ? answersFrom(res.text) : null;
+    // Answered from ChatLens: the answer is the next message, in our own wording.
+    if (!res) {
+      const next = later.find((x) => x.role === 'user' && !x.meta);
+      const m1 = next && /^My answer to your question "([\s\S]*?)": ([\s\S]*)$/.exec(next.text || '');
+      if (m1) answers = { [m1[1]]: m1[2].trim() };
+      else if (next && /^My answers to your questions:/.test(next.text || '')) {
+        answers = {};
+        for (const line of next.text.split('\n')) { const m2 = /^- ([\s\S]*?) → ([\s\S]*)$/.exec(line); if (m2) answers[m2[1]] = m2[2].trim(); }
+      }
+    }
+    const open = !res && !userSince && canAct;
+    const qs = (q.questions || []).map((qq, qi) => {
+      const chosen = answers?.[qq.question];
+      const opts = (qq.options || []).map((o) => `
+        <button type="button" class="decOpt ${chosen === o.label ? 'chosen' : ''}" ${open ? '' : 'disabled'} data-q="${qi}" data-label="${esc(o.label)}">
+          <span class="lbl">${esc(o.label)}</span>${o.description ? `<span class="desc">${esc(o.description)}</span>` : ''}</button>`).join('');
+      const other = open ? `<input type="text" class="decOther" data-q="${qi}" placeholder="Other answer…">` : '';
+      const picked = chosen && !(qq.options || []).some((o) => o.label === chosen) ? `<div class="decAnswered">Answered: ${esc(chosen)}</div>` : '';
+      return `<div class="decQ" data-q="${qi}" data-multi="${qq.multiSelect ? 1 : 0}">
+        <div class="decHead">${qq.header ? `<span class="decTag">${esc(qq.header)}</span>` : ''}${esc(qq.question)}</div>
+        <div class="decOpts">${opts}</div>${other}${picked}</div>`;
+    }).join('');
+    const single = (q.questions || []).length === 1 && !q.questions[0].multiSelect;
+    const status = res ? 'Answered' : (userSince || decided.has(t.id) ? 'Answered' : 'Waiting for your answer');
+    return `<div class="decCard ${open ? 'open' : ''}" data-dec-entry="${e.i}" data-dec-tool="${esc(t.id)}" data-kind="ask">
+      <div class="decTitle">Claude asked · <span class="muted">${status}</span></div>${qs}
+      ${open && !single ? '<button type="button" class="primary decSend">Send answers</button>' : ''}
+      ${open ? '<div class="decNote">Sent as you, so it counts as your decision.</div>' : ''}</div>`;
+  }
+  if (t.name === 'mcp__ccd_turn__wrap_up') {
+    const acts = q.actions || [];
+    if (!q.recap && !q.ask && !acts.length) return '';
+    const open = !userSince && canAct && !!(q.ask || acts.length);
+    const btns = acts.map((a, k) => {
+      const label = a.label || (a.action ? a.action.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : 'OK');
+      return `<button type="button" class="${k === 0 ? 'primary ' : ''}decAct" ${open ? '' : 'disabled'} data-text="${esc(a.label || APP_ACTION_TEXT[a.action] || label)}">${esc(label)}</button>`;
+    }).join('');
+    return `<div class="decCard next ${open ? 'open' : ''}" data-dec-entry="${e.i}" data-dec-tool="${esc(t.id)}" data-kind="next">
+      ${q.recap ? `<div class="decRecap">${esc(q.recap)}</div>` : ''}
+      ${q.ask ? `<div class="decAsk">${esc(q.ask)}</div>` : ''}
+      ${btns ? `<div class="decActs">${btns}</div>` : ''}
+      ${open ? '<div class="decNote">Your choice is sent as you.</div>' : ''}</div>`;
+  }
+  return '';
+}
+
+function redrawEntry(i) {
+  const el = document.getElementById('e' + i);
+  const e = state.chat?.entries[i];
+  if (el && e) el.innerHTML = entryHTML(e);
+}
+// After the chat moves on, earlier cards close.
+function refreshDecisionCards() {
+  document.querySelectorAll('#transcript [data-dec-entry]').forEach((c) => redrawEntry(Number(c.dataset.decEntry)));
+}
+
+function sendDecision(card, text) {
+  decided.add(card.dataset.decTool);
+  const kind = card.dataset.kind;
+  redrawEntry(Number(card.dataset.decEntry));
+  continueInline(state.chat.session_id, text, { asMe: true, answering: kind === 'ask', noFiles: true });
+}
+
+$('#transcript').addEventListener('click', (ev) => {
+  const card = ev.target.closest('.decCard.open');
+  if (!card) return;
+  const act = ev.target.closest('.decAct');
+  if (act) return sendDecision(card, act.dataset.text);
+  const opt = ev.target.closest('.decOpt');
+  if (opt) {
+    const qEl = opt.closest('.decQ');
+    if (qEl.dataset.multi !== '1') qEl.querySelectorAll('.decOpt').forEach((b) => { if (b !== opt) b.classList.remove('chosen'); });
+    opt.classList.toggle('chosen');
+    // One single-choice question: answer right away.
+    if (card.querySelectorAll('.decQ').length === 1 && qEl.dataset.multi !== '1') submitAnswers(card);
+    return;
+  }
+  if (ev.target.closest('.decSend')) submitAnswers(card);
+});
+$('#transcript').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.matches('.decOther')) { ev.preventDefault(); submitAnswers(ev.target.closest('.decCard')); }
+});
+
+function submitAnswers(card) {
+  const e = state.chat.entries[Number(card.dataset.decEntry)];
+  const t = e.tools.find((x) => x.id === card.dataset.decTool);
+  const qs = t.q.questions || [];
+  const lines = [];
+  qs.forEach((qq, qi) => {
+    const qEl = card.querySelector(`.decQ[data-q="${qi}"]`);
+    const picks = [...qEl.querySelectorAll('.decOpt.chosen')].map((b) => b.dataset.label);
+    const other = qEl.querySelector('.decOther')?.value.trim();
+    if (other) picks.push(other);
+    if (picks.length) lines.push({ q: qq.question, a: picks.join(', ') });
+  });
+  if (!lines.length) return;
+  const text = qs.length === 1
+    ? `My answer to your question "${lines[0].q}": ${lines[0].a}`
+    : 'My answers to your questions:\n' + lines.map((l) => `- ${l.q} → ${l.a}`).join('\n');
+  sendDecision(card, text);
+}
+
+// ---------------- attachments ----------------
+// Each file uploads as soon as it's picked, pasted or dropped; a message then
+// sends just the ids. target: 'reply' (under a chat) or 'prompt' (assistant).
+const attach = { reply: [], prompt: [] };
+const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const readyFiles = (t) => attach[t].filter((f) => f.id);
+const uploading = (t) => attach[t].some((f) => !f.id && !f.error);
+function takeFiles(t) { const ready = readyFiles(t); attach[t] = []; renderFiles(t); return ready.map(({ id, name, type, size }) => ({ id, name, type, size })); }
+function filesLine(files) { return files?.length ? `<div class="msgFiles">${files.map((f) => `<span>📎 ${esc(f.name)}</span>`).join('')}</div>` : ''; }
+
+function renderFiles(t) {
+  const box = $(t === 'reply' ? '#replyFiles' : '#promptFiles');
+  box.innerHTML = attach[t].map((f, i) => `
+    <div class="fileChip ${f.error ? 'error' : f.id ? '' : 'uploading'}" title="${esc(f.error || f.name)}">
+      ${f.url ? `<img src="${f.url}" alt="">` : `<span class="ficon">${esc((f.name.split('.').pop() || 'FILE').slice(0, 4).toUpperCase())}</span>`}
+      <span class="fmeta"><span class="fname">${esc(f.name)}</span><span class="fsize">${f.error ? 'failed' : f.id ? fmtSize(f.size) : 'uploading…'}</span></span>
+      <button type="button" class="fx" data-t="${t}" data-i="${i}" aria-label="Remove ${esc(f.name)}"><svg><use href="#i-close"/></svg></button>
+    </div>`).join('');
+}
+document.addEventListener('click', (e) => {
+  const x = e.target.closest('.fileChip .fx');
+  if (x) { const f = attach[x.dataset.t].splice(Number(x.dataset.i), 1)[0]; if (f?.url) URL.revokeObjectURL(f.url); renderFiles(x.dataset.t); }
+});
+
+async function addFiles(t, list) {
+  for (const file of [...list].slice(0, 10)) {
+    const name = file.name && file.name !== 'image.png' ? file.name : `pasted-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${(file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`;
+    const f = { name, size: file.size, type: file.type, url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null };
+    attach[t].push(f); renderFiles(t);
+    try {
+      if (file.size > 25 * 1024 * 1024) throw new Error('Files can be up to 25 MB.');
+      const r = await fetch(`/api/uploads?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      Object.assign(f, { id: j.id, size: j.size, name: j.name });
+    } catch (err) { f.error = err.message; }
+    renderFiles(t);
+  }
+}
+
+let pickTarget = 'reply';
+document.querySelectorAll('.attachBtn').forEach((b) => (b.onclick = () => { pickTarget = b.dataset.target; $('#filePicker').click(); }));
+$('#filePicker').addEventListener('change', (e) => { addFiles(pickTarget, e.target.files); e.target.value = ''; });
+// paste images/files straight into either box
+for (const [sel, t] of [['#reply', 'reply'], ['#prompt', 'prompt']]) {
+  $(sel).addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) { e.preventDefault(); addFiles(t, files); }
+  });
+}
+// drag and drop: onto the assistant panel -> assistant; anywhere else -> the open chat's reply box
+let dragDepth = 0;
+const dropTarget = (el) => (el?.closest?.('#claude') ? 'prompt' : (state.chat ? 'reply' : 'prompt'));
+document.addEventListener('dragenter', (e) => { if (e.dataTransfer?.types?.includes('Files')) { dragDepth++; $('#dropHint').classList.remove('hidden'); } });
+document.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#dropHint').classList.add('hidden'); } });
+document.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+document.addEventListener('drop', (e) => {
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault(); dragDepth = 0; $('#dropHint').classList.add('hidden');
+  const t = dropTarget(e.target);
+  if (t === 'prompt') openClaude();
+  addFiles(t, e.dataTransfer.files);
+});

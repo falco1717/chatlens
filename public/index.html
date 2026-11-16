@@ -31,6 +31,7 @@
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-fork" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="5" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="19" r="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M20.5 11.5 12.6 19.4a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </svg>
 
@@ -106,7 +107,9 @@
           <label class="pill asMe hidden" id="asMeWrap" title="Counts as your own message, so approvals work. The desktop window shows it after you reopen the chat there."><input type="checkbox" id="asMe"> Send as me</label>
         </div>
         <div id="replyNotice" class="notice hidden"></div>
+        <div class="files" id="replyFiles"></div>
         <div class="composerBox">
+          <button type="button" class="attachBtn" data-target="reply" aria-label="Attach files" title="Attach files (or paste / drop them)"><svg><use href="#i-clip"/></svg></button>
           <textarea id="reply" rows="1" enterkeyhint="send" placeholder="Ask Claude about this chat…"></textarea>
           <button type="submit" class="send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
         </div>
@@ -138,13 +141,18 @@
       <div id="messages"></div>
       <form id="composer" class="composer" autocomplete="off">
         <div id="convStatus" class="convStatus"></div>
+        <div class="files" id="promptFiles"></div>
         <div class="composerBox">
+          <button type="button" class="attachBtn" data-target="prompt" aria-label="Attach files" title="Attach files (or paste / drop them)"><svg><use href="#i-clip"/></svg></button>
           <textarea id="prompt" rows="1" enterkeyhint="send" placeholder="Ask the assistant about any chat…"></textarea>
           <button type="button" id="btnStop" class="send stop hidden" aria-label="Stop"><svg><use href="#i-stop"/></svg></button>
           <button type="submit" id="btnSend" class="send" aria-label="Send"><svg><use href="#i-send"/></svg></button>
         </div>
       </form>
     </section>
+
+    <input type="file" id="filePicker" multiple hidden>
+    <div id="dropHint" class="dropHint hidden">Drop files to attach</div>
 
     <!-- Settings -->
     <div id="settings" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">

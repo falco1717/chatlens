@@ -307,3 +307,47 @@ details.tool.err summary { color: var(--err); }
 .replyHead { gap: 8px; align-items: center; }
 .asMe { background: var(--raise); box-shadow: var(--shadow); }
 .pcBadge { font-size: 10px; border-radius: 6px; padding: 0 5px; background: var(--accent-soft); color: var(--accent); }
+
+/* Claude's questions and next-step buttons */
+.decCard { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin: 8px 0; background: var(--panel); }
+.decCard.open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.decTitle { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 8px; }
+.decQ + .decQ { margin-top: 12px; }
+.decHead { font-weight: 600; margin-bottom: 8px; }
+.decTag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
+.decOpts { display: flex; flex-direction: column; gap: 6px; }
+.decOpt { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px; padding: 9px 12px; border-radius: 12px; background: var(--panel2); border: 1px solid transparent; width: 100%; }
+.decOpt .lbl { font-weight: 600; }
+.decOpt .desc { font-size: 12.5px; color: var(--muted); font-weight: 400; }
+.decCard.open .decOpt:hover { border-color: var(--accent); }
+.decOpt.chosen { border-color: var(--accent); background: var(--accent-soft); }
+.decOpt:disabled { opacity: 1; cursor: default; }
+.decOpt:disabled:not(.chosen) { opacity: .55; }
+.decOther { width: 100%; margin-top: 6px; border-radius: 10px; }
+.decSend { margin-top: 10px; }
+.decAnswered { font-size: 12.5px; margin-top: 6px; color: var(--accent); }
+.decRecap { font-size: 13px; color: var(--muted); }
+.decAsk { font-weight: 600; margin-top: 8px; }
+.decActs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.decActs button { border-radius: 999px; padding: 6px 16px; }
+.decNote { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+
+/* attachments */
+.attachBtn { width: 34px; height: 34px; min-height: 34px; padding: 0; border-radius: 50%; background: transparent; border: 0; color: var(--muted); flex-shrink: 0; align-self: flex-end; }
+.attachBtn:hover { color: var(--accent); background: var(--accent-soft); }
+.attachBtn svg { width: 19px; height: 19px; }
+.composerBox:has(.attachBtn) { padding-left: 5px; }
+.files { display: flex; gap: 6px; flex-wrap: wrap; max-width: 860px; margin: 0 auto; }
+.files:not(:empty) { margin-bottom: 6px; }
+.fileChip { display: flex; align-items: center; gap: 6px; background: var(--raise); border: 1px solid var(--border); border-radius: 12px; padding: 4px 6px 4px 4px; max-width: 240px; font-size: 12px; box-shadow: var(--shadow); }
+.fileChip img, .fileChip .ficon { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--panel2); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--muted); font-weight: 700; }
+.fileChip .fmeta { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.fileChip .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fileChip .fsize { color: var(--muted); font-size: 11px; }
+.fileChip.uploading { opacity: .6; }
+.fileChip.error { border-color: var(--err); }
+.fileChip .fx { width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 50%; border: 0; background: transparent; color: var(--muted); }
+.fileChip .fx svg { width: 13px; height: 13px; }
+.msgFiles { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-top: 4px; }
+.msgFiles span { font-size: 11.5px; background: var(--panel2); border-radius: 8px; padding: 2px 8px; color: var(--muted); }
+.dropHint { position: fixed; inset: 0; z-index: 70; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 3px dashed var(--accent); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: var(--accent); pointer-events: none; }
