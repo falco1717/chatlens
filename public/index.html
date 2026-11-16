@@ -49,6 +49,7 @@
           <input id="q" type="search" enterkeyhint="search" placeholder="Filter titles · Enter searches messages" autocomplete="off">
         </label>
         <div id="filters" class="filters">
+          <select id="pcFilter" aria-label="PC" class="hidden"><option value="">All PCs</option></select>
           <select id="project" aria-label="Project"><option value="">All projects</option></select>
           <div class="checks">
             <label class="pill"><input type="checkbox" id="regex"> regex</label>
@@ -102,6 +103,7 @@
             <button type="button" data-mode="continue" class="on">Continue chat</button>
             <button type="button" data-mode="ask">Ask about it</button>
           </div>
+          <label class="pill asMe hidden" id="asMeWrap" title="Counts as your own message, so approvals work. The desktop window shows it after you reopen the chat there."><input type="checkbox" id="asMe"> Send as me</label>
         </div>
         <div id="replyNotice" class="notice hidden"></div>
         <div class="composerBox">
@@ -167,6 +169,17 @@
             <div id="acctMsg" class="acctMsg"></div>
           </form>
           <p class="muted small">The token is kept on the ChatLens server only and is never shown again. ChatLens's assistant uses it. Chats you continue on your PC use that PC's own Claude login.</p>
+        </section>
+        <section id="pcsSection" class="hidden">
+          <h4>PCs</h4>
+          <div id="pcList" class="pcList"></div>
+          <button type="button" id="pcAdd" class="primary">Add a PC</button>
+          <div id="pcPair" class="pcPair hidden">
+            <p>On the PC you want to attach, open <b>PowerShell</b> and run this once:</p>
+            <div class="cmdBox"><code id="pcCmd"></code><button type="button" id="pcCopy">Copy</button></div>
+            <p class="muted small" id="pcPairNote"></p>
+            <p class="muted small">It needs Node.js 20+ on that PC (and Claude Code signed in there, for continuing chats). It installs a small agent that starts at sign-in and connects out to this ChatLens over HTTPS; nothing needs to be opened on that PC's network.</p>
+          </div>
         </section>
       </div>
     </div>

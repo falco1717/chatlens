@@ -13,6 +13,8 @@ RUN npm ci --omit=dev --no-audit --no-fund
 COPY server.mjs ./
 COPY lib ./lib
 COPY public ./public
+# served to PCs while they pair (Settings > PCs > Add a PC)
+COPY sync ./sync
 
 # uid 1000 (the usual first user on the host), so bind-mounted data stays writable.
 USER node

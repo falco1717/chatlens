@@ -24,11 +24,18 @@ import { fileURLToPath } from 'node:url';
 import { relayToDesktop } from '../lib/relay.mjs';
 
 const HOME = os.homedir();
-const STATE_DIR = path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'ChatLens');
-let FILE_CFG = {};
-try { FILE_CFG = JSON.parse(fs.readFileSync(process.env.CHATLENS_SYNC_CONFIG || path.join(STATE_DIR, 'config.json'), 'utf8')); } catch { /* none */ }
 const APP_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// A paired install keeps its config, lock and log next to itself
+// (%LOCALAPPDATA%ChatLensagent); a repo checkout uses %LOCALAPPDATA%ChatLens.
+const STATE_DIR = fs.existsSync(path.join(APP_DIR, 'config.json')) ? APP_DIR : path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'ChatLens');
+let FILE_CFG = {};
+// (Windows PowerShell 5 writes UTF-8 with a BOM; JSON.parse does not accept one.)
+try { FILE_CFG = JSON.parse(fs.readFileSync(process.env.CHATLENS_SYNC_CONFIG || path.join(STATE_DIR, 'config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { /* none */ }
 const CFG = {
+  // HTTPS (paired from ChatLens Settings) ...
+  server: process.env.CHATLENS_SERVER || FILE_CFG.server,
+  token: process.env.CHATLENS_TOKEN || FILE_CFG.token,
+  // ... or SSH (the original setup)
   host: process.env.CHATLENS_SYNC_HOST || FILE_CFG.host,
   remoteRoot: process.env.CHATLENS_SYNC_ROOT || FILE_CFG.remoteRoot || '/opt/chatlens/sync',
   receiver: process.env.CHATLENS_SYNC_RECEIVER || FILE_CFG.receiver || '/opt/chatlens/receiver.py',
@@ -234,7 +241,7 @@ async function runJob(ch, job) {
   // Open in the desktop app: relay the message into that live window instead of running it here.
   const live = await liveSessions();
   const desk = live.find((s) => s.sessionId === job.sessionId && s.entrypoint === 'claude-desktop');
-  if (desk) {
+  if (desk && !job.asMe) {
     log('job', job.id, 'relaying into desktop chat', JSON.stringify(desk.name), `(${desk.status})`);
     const r = await relayToDesktop({ entry: desk, others: live, text: job.prompt, claudeExe: CFG.claude });
     log('job', job.id, r.ok ? 'relayed' : 'relay failed:', r.ok ? '' : r.detail);
@@ -271,6 +278,29 @@ async function runJob(ch, job) {
   });
 }
 
+// ---- HTTPS channel: the same requests, as calls to ChatLens's /agent API ----
+class HttpChannel {
+  constructor() { this.closed = false; }
+  async request(header, payload) {
+    const q = new URLSearchParams();
+    if (header.path != null) q.set('path', header.path);
+    if (header.offset != null) q.set('offset', String(header.offset));
+    if (header.job != null) q.set('job', header.job);
+    const body = header.op === 'stamp' ? Buffer.from(JSON.stringify(header.data || {})) : (payload || Buffer.alloc(0));
+    let res;
+    try {
+      res = await fetch(`${CFG.server}/agent/${header.op}?${q}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${CFG.token}`, 'Content-Type': 'application/octet-stream' }, body,
+        signal: AbortSignal.timeout(header.op === 'append' || header.op === 'put' ? 120000 : 30000),
+      });
+    } catch (e) { throw new Error(`cannot reach ${CFG.server}: ${e.cause?.code || e.message}`); }
+    if (res.status === 401) { const e = new Error('This PC was removed from ChatLens (its access key is no longer valid).'); e.fatal = true; throw e; }
+    if (!res.ok) throw new Error(`${header.op}: HTTP ${res.status}`);
+    return res.json();
+  }
+  close() { this.closed = true; }
+}
+
 async function readRange(full, start, end) {
   const fh = await fsp.open(full, 'r');
   try {
@@ -282,12 +312,12 @@ async function readRange(full, start, end) {
 
 // ---- one session of syncing over a live channel ----
 async function runSession() {
-  const ch = new Channel();
+  const ch = CFG.server ? new HttpChannel() : new Channel();
   const hello = await ch.request({ op: 'hello' });
   const remote = new Map(Object.entries(hello.files)); // rel -> size
   const sent = new Map(); // rel -> mtimeMs last pushed (side files)
   let desktopHash = '';
-  log(`connected to ${CFG.host}; remote has ${remote.size} files`);
+  log(`connected to ${CFG.server || CFG.host}; remote has ${remote.size} files`);
   let lastStamp = 0, lastLive = '', lastLiveAt = 0;
 
   for (;;) {
@@ -380,7 +410,7 @@ async function runSession() {
 }
 
 async function main() {
-  if (!CFG.host) { log('No server configured: set CHATLENS_SYNC_HOST or "host" in', path.join(STATE_DIR, 'config.json')); process.exitCode = 2; return; }
+  if (!CFG.host && !(CFG.server && CFG.token)) { log('No server configured: pair this PC from ChatLens (Settings > PCs), or set "host" in', path.join(STATE_DIR, 'config.json')); process.exitCode = 2; return; }
   if (!takeLock()) { log('another sync agent is running; exiting'); return; }
   let backoff = 5000;
   for (;;) {
@@ -389,6 +419,7 @@ async function main() {
       if (ONCE) break;
     } catch (e) {
       log('sync error:', e.message);
+      if (e.fatal) { process.exitCode = 3; break; } // removed in Settings: stop for good
       if (ONCE) process.exitCode = 1;
       if (ONCE) break;
       await new Promise((r) => setTimeout(r, backoff));

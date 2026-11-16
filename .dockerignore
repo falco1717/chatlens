@@ -2,6 +2,5 @@ node_modules
 data
 workspace
 deploy
-sync
 .claude
 *.cmd

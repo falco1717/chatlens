@@ -94,11 +94,12 @@ function renderList() {
   }
   $('#searchBanner').classList.add('hidden');
   // Copies (forks) of other chats are hidden unless "forks" is ticked.
-  let items = state.chats.filter((c) => (showArchived || !c.archived) && (showForks || !(c.chatlens_fork || c.fork_of)) && (!project || c.project === project));
+  const pcF = $('#pcFilter').value;
+  let items = state.chats.filter((c) => (showArchived || !c.archived) && (showForks || !(c.chatlens_fork || c.fork_of)) && (!project || c.project === project) && (!pcF || c.pc === pcF));
   if (q) items = items.filter((c) => (c.title + ' ' + c.first_prompt + ' ' + c.session_id).toLowerCase().includes(q));
   const row = (c) => `<div class="item ${c.session_id === activeId ? 'active' : ''}" data-id="${c.session_id}" title="${esc(c.first_prompt)}">
       <div class="t">${c.live ? liveDot(c.live) : ''}${esc(c.title)}</div>
-      <div class="s"><span>${c.live ? liveLabel(c.live) : fmtShort(c.updated)}</span><span>${c.messages} msgs</span>${c.archived ? '<span class="badge">archived</span>' : ''}${c.chatlens_fork || c.fork_of ? '<span class="badge">copy</span>' : ''}${c.subagents ? `<span class="badge">${c.subagents} agents</span>` : ''}</div>
+      <div class="s"><span>${c.live ? liveLabel(c.live) : fmtShort(c.updated)}</span><span>${c.messages} msgs</span>${(state.pcs?.length > 1 && c.pc_name) ? `<span class="pcBadge">${esc(c.pc_name)}</span>` : ''}${c.archived ? '<span class="badge">archived</span>' : ''}${c.chatlens_fork || c.fork_of ? '<span class="badge">copy</span>' : ''}${c.subagents ? `<span class="badge">${c.subagents} agents</span>` : ''}</div>
     </div>`;
   let html = '', last = '';
   // Sessions running on the PC right now go first, busy ones on top.
@@ -134,7 +135,7 @@ $('#q').addEventListener('keydown', async (e) => {
     renderList();
   } else if (e.key === 'Escape') { $('#q').value = ''; state.searchResults = null; renderList(); }
 });
-['#project', '#showArchived', '#showForks'].forEach((s) => $(s).addEventListener('change', renderList));
+['#project', '#pcFilter', '#showArchived', '#showForks'].forEach((s) => $(s).addEventListener('change', renderList));
 
 async function loadProjects() {
   const ps = await api('/api/projects');
@@ -506,6 +507,7 @@ function updateReplyState() {
     } else $('#replyNotice').classList.add('hidden');
     $('#replyBar').dataset.notice = want;
   }
+  $('#asMeWrap').classList.toggle('hidden', !(state.replyMode === 'continue' && live?.desktop));
 }
 document.querySelectorAll('.replyModes button').forEach((b) => (b.onclick = () => { setReplyMode(b.dataset.mode); if (!coarse) $('#reply').focus(); }));
 setReplyMode(state.replyMode);
@@ -547,17 +549,19 @@ async function continueInline(sessionId, text) {
     conv = j;
   } catch (err) { replyNotice(esc(err.message)); return; }
   $('#reply').value = ''; autoGrow($('#reply')); if (coarse) $('#reply').blur();
+  const asMe = !$('#asMeWrap').classList.contains('hidden') && $('#asMe').checked;
+  $('#asMe').checked = false; // one message at a time
   const chat = state.chat;
   renderMore(chat.entries.length); // show everything up to now
   const reply = { role: 'assistant', text: '', tools: [], _live: true };
-  state.pending = { sessionId, conv, text, reply, startTotal: chat.entries.length, status: `Sending to ${PC()}…`, done: false };
+  state.pending = { sessionId, conv, text, reply, asMe, startTotal: chat.entries.length, status: `Sending to ${PC()}…`, done: false };
   drawPending(true);
   setReplyBusy(true);
   let first;
   try {
     first = await fetch('/api/ask', {
       method: 'POST', headers: { 'X-ChatLens': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text, conversation_id: conv.id, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked }),
+      body: JSON.stringify({ prompt: text, conversation_id: conv.id, model: $('#model').value, effort: $('#effort').value, full_tools: $('#fullTools').checked, as_me: asMe }),
     });
     if (!first.ok) throw new Error((await first.json().catch(() => ({}))).error || first.statusText);
   } catch (err) {
@@ -602,7 +606,7 @@ function drawPending(scroll) {
     const r = p.reply;
     el.innerHTML = `
       <div class="entry user"><div class="who"><span>You · from ChatLens</span></div><div class="body">${esc(p.text)}</div></div>
-      <div class="entry assistant pending"><div class="who"><span>Claude · ${p.reply.relay || state.byId.get(p.sessionId)?.live?.desktop ? 'in the desktop app' : 'on ' + esc(PC())}</span></div>
+      <div class="entry assistant pending"><div class="who"><span>Claude · ${p.asMe ? 'on ' + esc(PC()) + ', as you' : (p.reply.relay || state.byId.get(p.sessionId)?.live?.desktop ? 'in the desktop app' : 'on ' + esc(PC()))}</span></div>
         ${msgHTML({ ...r, role: 'assistant', _live: !p.done })}
         ${p.done && !p.relayed ? '' : `<div class="pendingStatus">${esc(p.status || '')}</div>`}
       </div>`;
@@ -862,7 +866,7 @@ function applyEvent(conv, reply, ev, d, status = setStatus) {
   else if (ev === 'error') reply.error = d.message;
 }
 // The machine the chats live on (its hostname, reported by the server).
-function PC() { return state.pcName || 'your PC'; }
+function PC() { return state.byId?.get(state.chat?.session_id)?.pc_name || state.pcName || 'your PC'; }
 const setStatus = (t) => { $('#convStatus').textContent = t; };
 let repaintRaf = 0;
 function repaint(conv) {
@@ -1011,6 +1015,13 @@ async function pollStatus() {
     const s = await api('/api/status');
     checkBuild(s.build);
     if (s.pc_name) state.pcName = s.pc_name;
+    state.hosted = !!s.hosted;
+    if (s.pcs) {
+      state.pcs = s.pcs;
+      const sel = $('#pcFilter'), cur = sel.value;
+      sel.innerHTML = '<option value="">All PCs</option>' + s.pcs.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('');
+      sel.value = cur; sel.classList.toggle('hidden', s.pcs.length < 2);
+    }
     if (!$('#model').options.length) {
       $('#model').innerHTML = s.models.map((m) => `<option value="${m.id}">${m.label}</option>`).join('');
       $('#model').value = ls.get('model', 'claude-opus-5-5');
@@ -1107,3 +1118,51 @@ $('#acctRemove').onclick = async () => {
 
 // A reply that failed for lack of a login gets a shortcut to Settings.
 $('#messages').addEventListener('click', (e) => { if (e.target.closest('[data-open-settings]')) openSettings(); });
+
+// ---------------- Settings: PCs (hosted) ----------------
+let pcPoll = null, pcKnown = null;
+async function loadPcs() {
+  if (!state.hosted) { $('#pcsSection').classList.add('hidden'); return; }
+  $('#pcsSection').classList.remove('hidden');
+  let r;
+  try { r = await api('/api/pcs'); } catch (e) { $('#pcList').textContent = e.message; return; }
+  const ago = (t) => { if (!t) return 'never synced'; const s = Math.round((Date.now() - new Date(t)) / 1000); return s < 90 ? `synced ${s}s ago` : s < 5400 ? `synced ${Math.round(s / 60)}m ago` : `last synced ${fmtDate(t)}`; };
+  $('#pcList').innerHTML = r.pcs.map((x) => `
+    <div class="pcRow">
+      <i class="dot ${x.online ? 'on' : ''}" title="${x.online ? 'Online' : 'Offline'}"></i>
+      <div class="pcInfo"><div class="pcName">${esc(x.name)}</div>
+        <div class="pcMeta">${x.kind === 'ssh' ? 'SSH link' : 'Paired'} · ${x.chats} chats${x.live ? ` · ${x.live} open` : ''} · ${ago(x.lastSync)}</div></div>
+      ${x.kind === 'paired' ? `<button type="button" data-remove-pc="${esc(x.id)}" data-name="${esc(x.name)}">Remove</button>` : ''}
+    </div>`).join('') || '<div class="muted small">No PCs attached yet.</div>';
+  // While a pairing is open, say when the new PC shows up.
+  if (pcKnown) {
+    const fresh = r.pcs.find((x) => !pcKnown.has(x.id));
+    if (fresh) {
+      $('#pcPairNote').innerHTML = `<b>✓ ${esc(fresh.name)} is connected.</b> Its chats appear in the list as they sync.`;
+      pcKnown = null; clearInterval(pcPoll); pcPoll = null;
+      loadChats().catch(() => {});
+    }
+  }
+}
+$('#pcList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-remove-pc]');
+  if (!b) return;
+  if (!confirm(`Remove ${b.dataset.name} from ChatLens?\n\nIts synced chats are deleted from this server and its access key stops working. To uninstall the agent on that PC, delete the "ChatLens Agent" Startup shortcut and %LOCALAPPDATA%\ChatLens\agent.`)) return;
+  await api(`/api/pcs/${b.dataset.removePc}`, { method: 'DELETE' });
+  loadPcs(); loadChats().catch(() => {});
+});
+$('#pcAdd').onclick = async () => {
+  const r = await api('/api/pcs/pair', { method: 'POST' });
+  $('#pcCmd').textContent = r.command;
+  $('#pcPair').classList.remove('hidden');
+  $('#pcPairNote').textContent = `This code works once and expires at ${new Date(r.expires).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. Keep this open: the new PC appears above when it connects.`;
+  const now = await api('/api/pcs');
+  pcKnown = new Set(now.pcs.map((x) => x.id));
+  clearInterval(pcPoll); pcPoll = setInterval(() => { if ($('#settings').classList.contains('hidden')) { clearInterval(pcPoll); pcPoll = null; } else loadPcs(); }, 3000);
+};
+$('#pcCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#pcCmd').textContent); $('#pcCopy').textContent = 'Copied'; }
+  catch { const r = document.createRange(); r.selectNodeContents($('#pcCmd')); getSelection().removeAllRanges(); getSelection().addRange(r); $('#pcCopy').textContent = 'Selected'; }
+  setTimeout(() => ($('#pcCopy').textContent = 'Copy'), 1500);
+};
+document.querySelectorAll('.openSettings').forEach((b) => b.addEventListener('click', () => { $('#pcPair').classList.add('hidden'); loadPcs(); }));

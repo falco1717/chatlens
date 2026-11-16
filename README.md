@@ -5,10 +5,11 @@ A web UI for every Claude Code / Claude desktop chat on your PC, with Claude bui
 - **Browse and search** every chat: full transcripts, tool calls and their output, subagent runs, compaction summaries. Full-text and regex search across all of them.
 - **Ask about your chats.** A built-in assistant (Claude Agent SDK) has tools to list, search and read any transcript: "What did I work on this week?", "Where did we leave the migration?", "Which commands did I run against that server?". Its answers link to the exact messages.
 - **Continue a chat from anywhere.** Reply inside any chat and it carries on on your PC, in that same session, with its folder, tools and history.
-  - If the chat is **open in the Claude desktop app**, your message is relayed into that live window, and the desktop's Claude answers there.
+  - If the chat is **open in the Claude desktop app**, your message is relayed into that live window, and the desktop's Claude answers there. Relayed messages count as "from another session", so Claude won't take them as your approval for anything risky. For decisions, tick **Send as me**: ChatLens takes the chat over and your message counts as your own. The desktop window then shows it only after you reopen the chat there.
   - Otherwise, ChatLens resumes the session on the PC (`claude -p --resume`).
 - **Live view.** Sessions running on the PC right now are listed at the top with busy/idle status, and an open chat follows new messages as they happen.
 - **Connect your Claude account in the app.** Open Settings (the gear) → Claude account and paste a token from `claude setup-token`. ChatLens tests it and keeps it on the server, and never shows it again. No restart is needed.
+- **Attach PCs from the web UI.** Settings → PCs → **Add a PC** gives a one-line PowerShell command with a single-use code. Run it on any Windows PC with Node.js and Claude Code. It installs an agent that connects out to ChatLens over HTTPS, so nothing is exposed on that PC. Each PC's chats are labelled and filterable, replies are routed back to the right PC, and removing a PC deletes its synced data and switches its agent off.
 - **Mobile first.** Bottom tabs on phones, a slide-over panel on tablets, and an installable web app. Streams survive locked screens and flaky networks: turns run server-side and the page reconnects and replays what it missed.
 
 ## How it fits together
@@ -47,7 +48,7 @@ It listens on 127.0.0.1 only and uses your existing Claude Code login.
 
 1. **Server:** copy the repo to `/opt/chatlens/src`, copy `sync/receiver.py` to `/opt/chatlens/receiver.py`, create `/opt/chatlens/{sync,bridge,data}`, and adapt `deploy/example/compose.yaml` and a proxy route (`deploy/example/traefik-chatlens.yml` is one example). Then `docker compose up -d --build`.
 2. **Claude login for the container:** open ChatLens → Settings → Claude account, and paste the token that `claude setup-token` prints on any machine with Claude Code. Alternatively, `deploy/set-claude-token.ps1 -Server you@your-server` writes it to the server's `.env`.
-3. **Sync agent on the PC:** create `%LOCALAPPDATA%\ChatLens\config.json` containing `{"host": "you@your-server"}`, test with `node sync/chatlens-sync.mjs --once`, then start it at logon (a Startup shortcut to `wscript.exe sync\start-sync-hidden.vbs` runs it hidden). Its log is at `%LOCALAPPDATA%\ChatLens\sync.log`.
+3. **Attach PCs:** open Settings → PCs → **Add a PC** and run the command it shows on each PC. Your proxy must let `/agent/*` through **without** the login page (see the second router in `deploy/example/traefik-chatlens.yml`); the app authenticates each PC with its own token. Alternatively, use the SSH mode: create `%LOCALAPPDATA%\ChatLens\config.json` containing `{"host": "you@your-server"}`, test with `node sync/chatlens-sync.mjs --once`, then start it at logon (a Startup shortcut to `wscript.exe sync\start-sync-hidden.vbs` runs it hidden). Its log is at `%LOCALAPPDATA%\ChatLens\sync.log`.
 
 ## Security
 

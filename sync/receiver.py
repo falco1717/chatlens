@@ -115,13 +115,23 @@ def main():
                     if n.endswith(".json") and JOB_ID.match(n[:-5]):
                         try:
                             with open(p) as f:
-                                jobs.append(json.load(f))
+                                job = json.load(f)
+                            # jobs for PCs paired over HTTPS are not ours
+                            if job.get("pcId") not in (None, "default"):
+                                continue
+                            jobs.append(job)
                             os.replace(p, p[:-5] + ".taken")  # hand each job out once
                         except (OSError, ValueError):
                             pass
                     elif n.endswith(".stop") and JOB_ID.match(n[:-5]):
-                        stops.append(n[:-5])
-                        os.remove(p)
+                        try:
+                            with open(os.path.join(jobs_dir, n[:-5] + ".taken")) as f:
+                                owner = json.load(f).get("pcId")
+                        except (OSError, ValueError):
+                            owner = None
+                        if owner in (None, "default"):
+                            stops.append(n[:-5])
+                            os.remove(p)
                 reply({"ok": True, "jobs": jobs, "stops": stops})
             elif op == "event":
                 if not JOB_ID.match(str(req.get("job", ""))):

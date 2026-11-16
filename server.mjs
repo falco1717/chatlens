@@ -9,7 +9,8 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { ChatIndex } from './lib/indexer.mjs';
 import { buildChatTools, runTurn, forkChat, messageHandler, testClaudeLogin, MODELS } from './lib/agent.mjs';
-import { runOnPc, liveSessions, cleanBridge } from './lib/pcrun.mjs';
+import { runOnPc, liveSessions as localLive, cleanBridge } from './lib/pcrun.mjs';
+import { PcRegistry } from './lib/pcs.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CHATLENS_PORT || 4477);
@@ -28,7 +29,11 @@ fs.mkdirSync(DATA, { recursive: true });
 
 // Claude Code stores a cwd's sessions under the path with every non-alphanumeric char -> '-'.
 const encodeProject = (p) => p.replace(/[^A-Za-z0-9]/g, '-');
-const index = new ChatIndex({ excludeProjectDirs: [encodeProject(WORKSPACE)] });
+// Hosted: one data folder per attached PC (the SSH-synced one plus any paired over HTTPS).
+const pcs = HOSTED ? new PcRegistry({ dataDir: DATA, legacySyncDir: path.dirname(process.env.CHATLENS_PROJECTS_DIR || '/data/sync/projects'), bridgeDir: process.env.CHATLENS_BRIDGE_DIR || path.join(DATA, 'bridge') }) : null;
+const liveSessions = () => (pcs ? pcs.live() : localLive());
+const pcNameOf = (id) => (pcs ? pcs.pcName(id) : os.hostname());
+const index = new ChatIndex({ excludeProjectDirs: [encodeProject(WORKSPACE)], roots: pcs ? () => pcs.roots() : null });
 const mcp = buildChatTools(index);
 index.ensureFresh(true).then(() => console.log(`indexed ${index.sessions().length} chats`));
 
@@ -143,6 +148,12 @@ async function handle(req, res) {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'text/plain', 'Cache-Control': 'no-cache' });
     return fs.createReadStream(f).pipe(res);
   }
+  // PC agents (paired from Settings): token-authenticated, routed past the login proxy.
+  if (p.startsWith('/agent/')) {
+    if (!pcs) return json(res, 404, { error: 'not a hosted ChatLens' });
+    const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+    return pcs.handleAgent(req, res, url, { publicUrl: `${proto}://${req.headers.host}` });
+  }
   if (!p.startsWith('/api/')) { res.writeHead(404); return res.end('Not found'); }
   // CSRF guard: a custom header forces a CORS preflight, which we never grant.
   if (req.headers['x-chatlens'] !== '1') return json(res, 403, { error: 'missing X-ChatLens header' });
@@ -150,16 +161,20 @@ async function handle(req, res) {
   if (p === '/api/status') {
     let sync = null;
     if (HOSTED) { try { sync = JSON.parse(await fsp.readFile(path.join(path.dirname(process.env.CHATLENS_PROJECTS_DIR), 'last-sync.json'), 'utf8')); } catch { /* none yet */ } }
-    return json(res, 200, { progress: index.progress, chats: index.sessions().length, models: MODELS, hosted: HOSTED, sync, build: BUILD, pc_name: sync?.from || (HOSTED ? null : os.hostname()) });
+    const pcList = pcs ? pcs.list().map(({ id, name, kind, lastSync }) => ({ id, name, kind, lastSync })) : [{ id: 'local', name: os.hostname(), kind: 'local' }];
+    const newest = pcList.filter((x) => x.lastSync).sort((a, b) => b.lastSync.localeCompare(a.lastSync))[0];
+    if (pcs && newest) sync = { at: newest.lastSync, from: newest.name };
+    return json(res, 200, { progress: index.progress, chats: index.sessions().length, models: MODELS, hosted: HOSTED, sync, build: BUILD, pc_name: pcList[0]?.name || null, pcs: pcList });
   }
   if (p === '/api/chats') {
     await index.ensureFresh();
-    const r = index.list({ query: url.searchParams.get('q') || undefined, project: url.searchParams.get('project') || undefined, limit: 5000 });
+    const r = index.list({ query: url.searchParams.get('q') || undefined, project: url.searchParams.get('project') || undefined, pc: url.searchParams.get('pc') || undefined, limit: 5000 });
     const forks = forkIds();
     const live = await liveSessions();
     const liveBy = new Map(live.sessions.map((x) => [x.sessionId, x]));
     r.items.forEach((x) => {
       if (forks.has(x.session_id)) x.chatlens_fork = true;
+      if (pcs) x.pc_name = pcNameOf(x.pc);
       const l = liveBy.get(x.session_id);
       if (l) x.live = { status: l.status, since: l.statusUpdatedAt, desktop: l.entrypoint === 'claude-desktop' };
     });
@@ -167,6 +182,22 @@ async function handle(req, res) {
     return json(res, 200, r);
   }
   if (p === '/api/projects') return json(res, 200, index.projects());
+  if (p === '/api/pcs' || p.startsWith('/api/pcs/')) {
+    if (!pcs) return json(res, 200, { hosted: false, pcs: [] });
+    if (p === '/api/pcs/pair' && req.method === 'POST') {
+      const { code, expires } = pcs.createPairing();
+      const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+      const base = `${proto}://${req.headers.host}`;
+      return json(res, 200, { code, expires, command: `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm '${base}/agent/install.ps1?code=${code}' | iex"` });
+    }
+    const del = p.match(/^\/api\/pcs\/([a-f0-9]{12})$/);
+    if (del && req.method === 'DELETE') return pcs.remove(del[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: 'not found' });
+    await index.ensureFresh();
+    const counts = {};
+    for (const s of index.sessions()) counts[s.pc] = (counts[s.pc] || 0) + 1;
+    const live = await liveSessions();
+    return json(res, 200, { hosted: true, pcs: pcs.list().map((x) => ({ ...x, chats: counts[x.id] || 0, live: live.sessions.filter((l) => l.pc === x.id).length, online: !!x.lastSync && Date.now() - new Date(x.lastSync).getTime() < 120000 })) });
+  }
   if (p === '/api/account') {
     if (req.method === 'POST') {
       const { token } = await readBody(req);
@@ -264,7 +295,7 @@ async function handle(req, res) {
     let c = conversations.find((x) => x.mode === 'pc' && x.sessionId === s.id);
     if (!c) {
       const now = new Date().toISOString();
-      c = { id: crypto.randomUUID(), title: `⇢ ${s.title}`, mode: 'pc', sessionId: s.id, sourceId: s.id, cwd: s.cwd, created: now, updated: now, messages: [] };
+      c = { id: crypto.randomUUID(), title: `⇢ ${s.title}`, mode: 'pc', sessionId: s.id, sourceId: s.id, cwd: s.cwd, pc: s.pc || null, created: now, updated: now, messages: [] };
       conversations.push(c); save();
     }
     return json(res, 200, c);
@@ -363,7 +394,7 @@ async function ask(req, res) {
       }, c.sessionId);
       let relay = null;
       const { code, stderr, relayed } = await runOnPc(
-        { id: crypto.randomUUID(), sessionId: c.sessionId, cwd: c.cwd, prompt, model: body.model, effort: body.effort, fullTools },
+        { id: crypto.randomUUID(), sessionId: c.sessionId, cwd: c.cwd, pcId: c.pc || index.get(c.sessionId)?.pc || 'default', asMe: body.as_me === true, prompt, model: body.model, effort: body.effort, fullTools },
         { onLine: (o) => { if (o.type === 'chatlens_relay') { relay = o; record('relay', o); } else handle(o); }, onStatus: (text) => record('status', { text }), signal: abort.signal },
       );
       if (relayed) {
@@ -377,7 +408,7 @@ async function ask(req, res) {
       if (abort.signal.aborted) throw new Error('Stopped.');
       if (!handle.hasResult()) {
         const why = (stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
-        throw new Error(`Claude on ${await pcName()} exited (code ${code})${why ? ': ' + why : ''}`);
+        throw new Error(`Claude on ${pcNameOf(c.pc)} exited (code ${code})${why ? ': ' + why : ''}`);
       }
     } else {
       await runTurn({
