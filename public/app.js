@@ -178,9 +178,21 @@ function buildEntry(e) {
   const div = document.createElement('div');
   div.className = `entry ${e.role}${e.meta ? ' meta' : ''}${e.sidechain ? ' sidechain' : ''}`;
   div.id = 'e' + e.i;
-  if (!visible(e)) div.classList.add('hidden');
+  if (!visible(e) || plumbing(e)) div.classList.add('hidden');
   div.innerHTML = entryHTML(e);
+  // A turn whose only content is a question/next-step card that now sits in the dock: nothing left to show here.
+  if (e.role === 'assistant' && !e.text && (e.tools || []).every((t) => t.q || !$('#showTools').checked) && !div.querySelector('.decCard')) div.classList.add('hidden');
   return div;
+}
+// The app's own bookkeeping, e.g. "Shown in the next-step box": results of the question/box tools.
+function plumbing(e) {
+  if (e.role !== 'tool' || !e.toolUseId || !state.chat) return false;
+  const c = state.chat;
+  if (!c._decIds || c._decIdsLen !== c.entries.length) {
+    c._decIds = new Set(c.entries.flatMap((x) => (x.tools || []).filter((t) => t.q).map((t) => t.id)));
+    c._decIdsLen = c.entries.length;
+  }
+  return c._decIds.has(e.toolUseId);
 }
 
 function addLoadEarlier() {
@@ -341,6 +353,7 @@ function renderMore(upTo) {
   const pend = $('#pendingTurn');
   if (pend) $('#transcript').insertBefore(frag, pend); else $('#transcript').appendChild(frag);
   state.rendered = end;
+  updateDock();
   if (end < cap) {
     const b = document.createElement('button');
     b.className = 'loadMore';
@@ -1200,7 +1213,7 @@ function answersFrom(text) {
   return out;
 }
 
-function decisionHTML(e, t) {
+function decisionHTML(e, t, where = 'inline') {
   const q = t.q;
   if (!q || !state.chat) return '';
   const later = state.chat.entries.slice(e.i + 1);
@@ -1220,6 +1233,7 @@ function decisionHTML(e, t) {
       }
     }
     const open = !res && !userSince && canAct;
+    if (open !== (where === 'dock')) return '';
     const qs = (q.questions || []).map((qq, qi) => {
       const chosen = answers?.[qq.question];
       const opts = (qq.options || []).map((o) => `
@@ -1242,6 +1256,7 @@ function decisionHTML(e, t) {
     const acts = q.actions || [];
     if (!q.recap && !q.ask && !acts.length) return '';
     const open = !userSince && canAct && !!(q.ask || acts.length);
+    if (open !== (where === 'dock')) return '';
     const btns = acts.map((a, k) => {
       const label = a.label || (a.action ? a.action.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : 'OK');
       return `<button type="button" class="${k === 0 ? 'primary ' : ''}decAct" ${open ? '' : 'disabled'} data-text="${esc(a.label || APP_ACTION_TEXT[a.action] || label)}">${esc(label)}</button>`;
@@ -1255,20 +1270,42 @@ function decisionHTML(e, t) {
   return '';
 }
 
+// The newest unanswered question / next-step box, shown after the last message.
+function updateDock() {
+  const t = $('#transcript');
+  t.querySelector('#decDock')?.remove();
+  const ents = state.chat?.entries || [];
+  if (!state.chat || state.rendered < ents.length) return; // only once the end is on screen
+  let html = '';
+  for (let k = ents.length - 1; k >= Math.max(0, ents.length - 80) && !html; k--) {
+    const e = ents[k];
+    if (e.role === 'user' && !e.meta) break; // you've replied since: nothing is waiting
+    for (const tool of e.tools || []) if (tool.q && (html = decisionHTML(e, tool, 'dock'))) break;
+  }
+  if (!html) return;
+  const dock = document.createElement('div');
+  dock.id = 'decDock'; dock.className = 'entry assistant';
+  dock.innerHTML = html;
+  const pend = t.querySelector('#pendingTurn');
+  if (pend) t.insertBefore(dock, pend); else t.appendChild(dock);
+}
+
 function redrawEntry(i) {
   const el = document.getElementById('e' + i);
   const e = state.chat?.entries[i];
-  if (el && e) el.innerHTML = entryHTML(e);
+  if (el && e) el.replaceWith(buildEntry(e)); // rebuild: an answered card shows here again
 }
 // After the chat moves on, earlier cards close.
 function refreshDecisionCards() {
-  document.querySelectorAll('#transcript [data-dec-entry]').forEach((c) => redrawEntry(Number(c.dataset.decEntry)));
+  document.querySelectorAll('#transcript .entry:not(#decDock) [data-dec-entry]').forEach((c) => redrawEntry(Number(c.dataset.decEntry)));
+  updateDock();
 }
 
 function sendDecision(card, text) {
   decided.add(card.dataset.decTool);
   const kind = card.dataset.kind;
   redrawEntry(Number(card.dataset.decEntry));
+  updateDock();
   continueInline(state.chat.session_id, text, { asMe: true, answering: kind === 'ask', noFiles: true });
 }
 
